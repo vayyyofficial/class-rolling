@@ -160,6 +160,7 @@ export default function HomePage({
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <StudentList
             students={students}
+            layout={layout}
             assignments={currentArrangement?.assignments || {}}
             onSelectStudent={handleStudentSelect}
             highlightedStudentId={highlightedStudentId}
