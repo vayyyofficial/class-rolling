@@ -1,10 +1,6 @@
-/**
- * SEATFLOW - Layout Service
- * Manages classroom layout structure, blocks, seats, and desk configuration.
- */
-
 import { DEFAULT_LAYOUT } from '../data/defaultLayout';
 import { storageService } from './storageService';
+import { supabase } from './supabase';
 
 const STORAGE_KEY = 'layout';
 
@@ -18,8 +14,95 @@ export const layoutService = {
     return saved;
   },
 
-  saveLayout(layout) {
-    return storageService.set(STORAGE_KEY, layout);
+  async fetchLayout() {
+    try {
+      const { data: layoutData, error: lErr } = await supabase
+        .from('classroom_layouts')
+        .select('*')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const { data: seatData, error: sErr } = await supabase
+        .from('seats')
+        .select('*')
+        .order('seat_code', { ascending: true });
+
+      if (!lErr && !sErr && layoutData && seatData && seatData.length > 0) {
+        // Group seats by block_id
+        const blocksMap = {
+          'block-left': { id: 'block-left', name: 'Blok Kiri', cols: 2, rows: 5, seats: [] },
+          'block-middle': { id: 'block-middle', name: 'Blok Tengah', cols: 2, rows: 5, seats: [] },
+          'block-right': { id: 'block-right', name: 'Blok Kanan', cols: 2, rows: 4, seats: [] },
+        };
+
+        seatData.forEach((s) => {
+          const bId = s.block_id || 'block-left';
+          if (!blocksMap[bId]) {
+            blocksMap[bId] = {
+              id: bId,
+              name: s.block_name || bId,
+              cols: 2,
+              rows: 1,
+              seats: [],
+            };
+          }
+
+          blocksMap[bId].seats.push({
+            id: s.id,
+            code: s.seat_code,
+            row: s.row_index,
+            col: s.col_index,
+            isAvailable: s.is_available,
+            defaultEmpty: s.default_empty,
+          });
+
+          // Update max row and col
+          if (s.row_index + 1 > blocksMap[bId].rows) blocksMap[bId].rows = s.row_index + 1;
+          if (s.col_index + 1 > blocksMap[bId].cols) blocksMap[bId].cols = s.col_index + 1;
+        });
+
+        const formatted = {
+          id: layoutData.id,
+          name: layoutData.name,
+          teacherDesk: {
+            label: layoutData.teacher_desk_label || 'Meja Guru',
+            position: layoutData.teacher_desk_position || 'center',
+          },
+          blocks: Object.values(blocksMap),
+        };
+
+        storageService.set(STORAGE_KEY, formatted);
+        return formatted;
+      }
+    } catch (err) {
+      console.warn('[layoutService] Supabase fetchLayout error:', err);
+    }
+
+    return this.getLayout();
+  },
+
+  async saveLayout(layout) {
+    storageService.set(STORAGE_KEY, layout);
+
+    // Sync to Supabase if authenticated admin
+    try {
+      if (layout.id) {
+        await supabase
+          .from('classroom_layouts')
+          .update({
+            name: layout.name,
+            teacher_desk_position: layout.teacherDesk?.position || 'center',
+            teacher_desk_label: layout.teacherDesk?.label || 'Meja Guru',
+          })
+          .eq('id', layout.id);
+      }
+    } catch (err) {
+      console.warn('[layoutService] Supabase layout save error:', err);
+    }
+
+    return true;
   },
 
   resetToDefault() {
@@ -28,24 +111,18 @@ export const layoutService = {
     return fresh;
   },
 
-  /**
-   * Helper to recalculate total and available seats count
-   */
   getSeatStats(layout) {
     let total = 0;
     let available = 0;
     (layout.blocks || []).forEach((b) => {
       (b.seats || []).forEach((s) => {
         total++;
-        if (s.isAvailable) available++;
+        if (s.isAvailable !== false) available++;
       });
     });
     return { total, available };
   },
 
-  /**
-   * Helper to generate a new sequential seat code if needed
-   */
   generateSeatCode(layout) {
     let max = 0;
     (layout.blocks || []).forEach((b) => {
@@ -57,4 +134,3 @@ export const layoutService = {
     return String(max + 1).padStart(2, '0');
   },
 };
-

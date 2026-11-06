@@ -563,3 +563,4 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.seating_assignments;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.group_generations;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.group_generation_members;
 ALTER PUBLICATION supabase_realtime ADD TABLE public.students;
+

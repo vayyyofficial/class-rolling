@@ -49,6 +49,10 @@ export default function App() {
       if (isMounted && data) setStudents(data);
     });
 
+    layoutService.fetchLayout().then((data) => {
+      if (isMounted && data) setLayout(data);
+    });
+
     seatingService.fetchActiveArrangement().then((data) => {
       if (isMounted && data) setCurrentArrangement(data);
     });

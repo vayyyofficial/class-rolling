@@ -564,3 +564,4 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     -- Ignore if already added to publication
 END $$;
+

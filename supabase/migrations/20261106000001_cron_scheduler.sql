@@ -22,3 +22,4 @@ SELECT cron.schedule(
     '0 23 * * 6', -- 23:00 UTC on Saturday = 06:00 WIB on Sunday
     $$SELECT public.execute_seating_reroll('automatic', 'Rotasi Otomatis Mingguan (Minggu 06:00 WIB)', NULL);$$
 );
+
