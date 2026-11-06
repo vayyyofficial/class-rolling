@@ -1,0 +1,18 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/weekly-reroll",
+      "schedule": "0 23 * * 6"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
