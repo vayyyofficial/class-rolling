@@ -8,8 +8,11 @@ import { WIB_TIMEZONE } from '../../utils/timezone';
 export default function ScheduleManager({ onSimulateAutoReroll, showNotification }) {
   const currentCycleId = getWeeklyCycleId();
 
-  const handleSimulate = () => {
-    onSimulateAutoReroll();
+  const handleSimulate = async () => {
+    const result = await onSimulateAutoReroll();
+    if (result?.error) {
+      return;
+    }
     showNotification('Simulasi rotasi otomatis mingguan berhasil dijalankan!', 'success');
   };
 

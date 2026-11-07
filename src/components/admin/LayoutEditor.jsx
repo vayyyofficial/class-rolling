@@ -200,14 +200,16 @@ export default function LayoutEditor({
   };
 
   // Save changes
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!validation.isValid) {
       showNotification(validation.errors[0] || 'Validasi tata letak gagal.', 'error');
       return;
     }
-    onSave(layout);
+    const result = await onSave(layout);
+    if (result?.error) {
+      return;
+    }
     setHasChanges(false);
-    showNotification('Konfigurasi tata letak kelas berhasil disimpan!', 'success');
   };
 
   // Reset to default

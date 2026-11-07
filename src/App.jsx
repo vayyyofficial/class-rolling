@@ -21,10 +21,9 @@ export default function App() {
   // Application Data State
   const [students, setStudents] = useState(() => studentService.getStudents());
   const [layout, setLayout] = useState(() => layoutService.getLayout());
-  const [currentArrangement, setCurrentArrangement] = useState(() => {
-    seatingService.checkAndRunScheduledReroll();
-    return seatingService.getCurrentArrangement();
-  });
+  const [currentArrangement, setCurrentArrangement] = useState(() =>
+    seatingService.getCurrentArrangement()
+  );
   const [previousArrangement, setPreviousArrangement] = useState(() =>
     seatingService.getPreviousArrangement()
   );
@@ -106,58 +105,93 @@ export default function App() {
 
   // Student Actions
   const handleAddStudent = async (studentData) => {
-    const newStudent = await studentService.addStudent(studentData);
+    const result = await studentService.addStudent(studentData);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
     setStudents(studentService.getStudents());
-    return newStudent;
+    showNotification(`Siswa "${studentData.nickname}" berhasil ditambahkan.`, 'success');
+    return result;
   };
 
   const handleUpdateStudent = async (id, updates) => {
-    await studentService.updateStudent(id, updates);
+    const result = await studentService.updateStudent(id, updates);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
     setStudents(studentService.getStudents());
+    showNotification('Data siswa berhasil diperbarui.', 'success');
+    return result;
   };
 
   const handleDeleteStudent = async (id) => {
-    await studentService.deleteStudent(id);
+    const result = await studentService.deleteStudent(id);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
     setStudents(studentService.getStudents());
+    showNotification('Data siswa berhasil dihapus.', 'info');
+    return result;
   };
 
   const handleToggleStudentActive = async (id) => {
-    await studentService.toggleActive(id);
+    const result = await studentService.toggleActive(id);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
     setStudents(studentService.getStudents());
+    return result;
   };
 
   const handleResetStudents = () => {
     const fresh = studentService.resetToDefault();
     setStudents(fresh);
+    showNotification('Daftar siswa dikembalikan ke konfigurasi standar.', 'info');
   };
 
   // Layout Actions
-  const handleSaveLayout = (newLayout) => {
-    layoutService.saveLayout(newLayout);
+  const handleSaveLayout = async (newLayout) => {
+    const result = await layoutService.saveLayout(newLayout);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
     setLayout(newLayout);
+    showNotification('Konfigurasi tata letak kelas berhasil disimpan!', 'success');
+    return result;
   };
 
   const handleResetLayout = () => {
     const fresh = layoutService.resetToDefault();
     setLayout(fresh);
+    showNotification('Tata letak telah dikembalikan ke denah standar (3 blok).', 'info');
   };
 
   // Seating / Reroll Actions
   // Note: Authorization is validated server-side via the session token stored in authService.
   // Never pass currentUser?.id as a proof of admin authorization to the server.
   const handleExecuteReroll = async (type = 'Manual', description = '') => {
-    const newArrangement = await seatingService.executeRerollAsync(
+    const result = await seatingService.executeRerollAsync(
       type,
       description
     );
-    setCurrentArrangement(newArrangement);
+    if (result?.error) {
+      showNotification(result.error, 'error');
+      return result;
+    }
+    setCurrentArrangement(result);
     setPreviousArrangement(seatingService.getPreviousArrangement());
     const hist = await seatingService.fetchHistory();
     setHistory(hist);
+    return result;
   };
 
-  const handleSimulateAutoReroll = () => {
-    handleExecuteReroll('Otomatis', 'Simulasi Rotasi Otomatis Mingguan (Minggu 06:00 WIB)');
+  const handleSimulateAutoReroll = async () => {
+    return handleExecuteReroll('Otomatis', 'Simulasi Rotasi Otomatis Mingguan (Minggu 06:00 WIB)');
   };
 
   const handleClearHistory = () => {

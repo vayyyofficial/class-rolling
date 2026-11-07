@@ -45,13 +45,18 @@ export default function SeatingManager({
       setShuffleNames(tempNames);
     }, 85);
 
-    setTimeout(() => {
+    setTimeout(async () => {
       clearInterval(interval);
       setIsShuffling(false);
       setShuffleNames({});
 
-      // Execute actual unbiased Fisher-Yates reroll
-      onExecuteReroll();
+      // Execute actual unbiased Fisher-Yates reroll via authenticated server RPC
+      const result = await onExecuteReroll();
+
+      if (result?.error) {
+        // Error notification is displayed by App.jsx
+        return;
+      }
 
       // Launch festive confetti!
       try {

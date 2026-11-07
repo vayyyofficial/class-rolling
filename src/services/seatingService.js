@@ -1,11 +1,21 @@
-import { storageService } from './storageService';
-import { layoutService } from './layoutService';
-import { studentService } from './studentService';
-import { authService } from './authService';
-import { generateSeatingArrangement } from '../utils/randomizer';
-import { getWeeklyCycleId } from '../utils/scheduler';
-import { formatWIBDateTime } from '../utils/timezone';
-import { supabase } from './supabase';
+/**
+ * CLASS ROLLING - Seating Arrangement & Reroll Service
+ *
+ * Seating assignments and history are publicly viewable by students.
+ * All mutations (manual reroll, scheduling) require server-side authorization.
+ *
+ * Weekly automatic rerolls are executed server-side via pg_cron (Sundays at 06:00 WIB).
+ * The browser NEVER triggers automated rerolls on cycle transition.
+ */
+
+import { storageService } from './storageService.js';
+import { layoutService } from './layoutService.js';
+import { studentService } from './studentService.js';
+import { authService } from './authService.js';
+import { generateSeatingArrangement } from '../utils/randomizer.js';
+import { getWeeklyCycleId } from '../utils/scheduler.js';
+import { formatWIBDateTime } from '../utils/timezone.js';
+import { supabase, isSupabaseConfigured } from './supabase.js';
 
 const STORAGE_KEYS = {
   CURRENT_ARRANGEMENT: 'seating_current',
@@ -16,31 +26,59 @@ const STORAGE_KEYS = {
 
 export const seatingService = {
   /**
-   * Returns the active seating arrangement.
-   * If not found, initializes an arrangement automatically.
+   * Returns the cached active seating arrangement for immediate rendering.
+   * If cache is empty, provides a clean initial layout without faking database records.
    */
   getCurrentArrangement() {
-    let arrangement = storageService.get(STORAGE_KEYS.CURRENT_ARRANGEMENT, null);
+    const arrangement = storageService.get(STORAGE_KEYS.CURRENT_ARRANGEMENT, null);
 
-    if (!arrangement || !arrangement.assignments) {
-      arrangement = this.executeReroll('Inisialisasi', 'Inisialisasi Pengacakan Awal Sistem');
+    if (arrangement && arrangement.assignments) {
+      return arrangement;
     }
 
-    return arrangement;
+    // Clean initial fallback state for immediate offline/cold-start UI display
+    const layout = layoutService.getLayout();
+    const students = studentService.getStudents();
+    const activeStudents = (students || []).filter((s) => s.isActive);
+    const { assignments, emptySeatIds, timestamp } = generateSeatingArrangement(layout, students);
+    const currentCycleId = getWeeklyCycleId();
+
+    const fallbackArrangement = {
+      assignments,
+      emptySeatIds,
+      updatedAt: timestamp,
+      type: 'Inisialisasi',
+      cycleId: currentCycleId,
+      activeStudentCount: activeStudents.length,
+    };
+
+    storageService.set(STORAGE_KEYS.CURRENT_ARRANGEMENT, fallbackArrangement);
+    return fallbackArrangement;
   },
 
   /**
-   * Async fetch active arrangement from Supabase with local fallback
+   * Fetch active arrangement from Supabase get_active_seating RPC.
+   * Updates local cache upon successful fetch.
    */
   async fetchActiveArrangement() {
+    if (!isSupabaseConfigured) {
+      return this.getCurrentArrangement();
+    }
+
     try {
       const { data, error } = await supabase.rpc('get_active_seating');
+
       if (!error && data && data.active && data.assignments) {
         const arrangement = {
           assignments: data.assignments,
           emptySeatIds: data.empty_seat_ids || [],
           updatedAt: data.created_at,
-          type: data.roll_type === 'automatic' ? 'Otomatis' : data.roll_type === 'manual' ? 'Manual' : 'Inisialisasi',
+          type:
+            data.roll_type === 'automatic'
+              ? 'Otomatis'
+              : data.roll_type === 'manual'
+              ? 'Manual'
+              : 'Inisialisasi',
           cycleId: data.cycle_id,
           activeStudentCount: Object.keys(data.assignments).length,
         };
@@ -48,28 +86,33 @@ export const seatingService = {
         return arrangement;
       }
     } catch (err) {
-      console.warn('[seatingService] Supabase get_active_seating error, using local:', err);
+      console.warn('[seatingService] get_active_seating error, using cached data:', err);
     }
 
     return this.getCurrentArrangement();
   },
 
   /**
-   * Returns previous arrangement for comparison
+   * Returns previous arrangement for visual comparison.
    */
   getPreviousArrangement() {
     return storageService.get(STORAGE_KEYS.PREVIOUS_ARRANGEMENT, null);
   },
 
   /**
-   * Checks whether the current weekly cycle has had an automatic reroll.
+   * Passive cycle check on client-side:
+   * Detects weekly cycle transition and refreshes active arrangement from the server.
+   * NOTE: The browser NEVER initiates an automatic reroll! Automatic weekly rotations
+   * are executed strictly by pg_cron on the database server every Sunday at 06:00 WIB.
    */
-  checkAndRunScheduledReroll() {
+  async checkAndRunScheduledReroll() {
     const currentCycleId = getWeeklyCycleId();
     const lastCycleId = storageService.get(STORAGE_KEYS.LAST_CYCLE_ID, null);
 
     if (lastCycleId && lastCycleId !== currentCycleId) {
-      return this.executeReroll('Otomatis', 'Rotasi Otomatis Mingguan (Jadwal Minggu 06:00 WIB)');
+      storageService.set(STORAGE_KEYS.LAST_CYCLE_ID, currentCycleId);
+      // Fetch latest server-side rotation generated by pg_cron
+      return await this.fetchActiveArrangement();
     }
 
     if (!lastCycleId) {
@@ -80,85 +123,91 @@ export const seatingService = {
   },
 
   /**
-   * Execute seating reroll (manual or automatic).
-   * NOTE: Manual reroll NEVER cancels or postpones the upcoming Sunday 06:00 WIB automatic roll!
-   * Authorization is validated server-side via the session token.
-   * Never trust a browser-supplied admin UUID for authorization.
+   * Execute seating reroll on the database via execute_seating_reroll RPC.
+   *
+   * REQUIREMENTS:
+   * - Requires a valid administrator session token.
+   * - Never trusts a client-supplied admin UUID for authorization.
+   * - On failure, surfaces the error to the caller — NEVER silently executes a local fallback.
+   * - After successful reroll, pulls fresh active state from get_active_seating.
+   *
+   * @param {string} type - 'Manual' | 'Otomatis' (simulation) | 'Inisialisasi'
+   * @param {string} description - Log description
+   * @returns {Promise<Object>} Updated arrangement or { error: string }
    */
   async executeRerollAsync(type = 'Manual', description = '') {
-    // Try Supabase RPC first
+    const token = authService.getSessionToken();
+
+    if (!token) {
+      return {
+        error: 'Sesi administrator tidak aktif atau telah kedaluwarsa. Silakan masuk kembali.',
+      };
+    }
+
+    if (!isSupabaseConfigured) {
+      return {
+        error: 'Koneksi database Supabase belum dikonfigurasi. Periksa konfigurasi .env Anda.',
+      };
+    }
+
+    const dbType =
+      type === 'Otomatis'
+        ? 'automatic'
+        : type === 'Inisialisasi'
+        ? 'initial'
+        : 'manual';
+
     try {
-      const dbType = type === 'Otomatis' ? 'automatic' : type === 'Inisialisasi' ? 'initial' : 'manual';
-      const token = authService.getSessionToken();
       const { data, error } = await supabase.rpc('execute_seating_reroll', {
         p_roll_type: dbType,
-        p_description: description || (type === 'Manual' ? 'Pengacakan Manual oleh Admin' : 'Pengacakan Otomatis Mingguan'),
-        p_admin_id: null,       // Server authenticates via p_session_token; never trust browser-supplied UUID
-        p_session_token: token, // Server validates this against admin_sessions table
+        p_description:
+          description ||
+          (dbType === 'manual'
+            ? 'Pengacakan Manual oleh Admin'
+            : 'Pengacakan Otomatis Mingguan'),
+        p_admin_id: null, // Authorization is validated server-side by session token only
+        p_session_token: token,
       });
 
-      if (!error && data?.success) {
-        const fetched = await this.fetchActiveArrangement();
-        return fetched;
+      if (error) {
+        console.error('[seatingService] execute_seating_reroll RPC error:', error.message);
+        return {
+          error: error.message || 'Gagal memproses pengacakan tempat duduk di server.',
+        };
       }
+
+      if (!data?.success) {
+        return {
+          error: data?.error || 'Server menolak permintaan pengacakan tempat duduk.',
+        };
+      }
+
+      // Fetch fresh active arrangement from server
+      const latest = await this.fetchActiveArrangement();
+      return latest;
     } catch (err) {
-      console.warn('[seatingService] Supabase RPC failed, running local reroll:', err);
+      console.error('[seatingService] execute_seating_reroll exception:', err);
+      return {
+        error: 'Gagal terhubung ke server database. Periksa koneksi internet Anda.',
+      };
     }
-
-    // Fallback to local execution
-    return this.executeReroll(type, description);
   },
 
   /**
-   * Synchronous / local fallback reroll execution
-   */
-  executeReroll(type = 'Manual', description = '') {
-    const layout = layoutService.getLayout();
-    const students = studentService.getStudents();
-    const activeStudents = students.filter((s) => s.isActive);
-
-    const existing = storageService.get(STORAGE_KEYS.CURRENT_ARRANGEMENT, null);
-    if (existing) {
-      storageService.set(STORAGE_KEYS.PREVIOUS_ARRANGEMENT, existing);
-    }
-
-    const { assignments, emptySeatIds, timestamp } = generateSeatingArrangement(layout, students);
-    const currentCycleId = getWeeklyCycleId();
-
-    const arrangement = {
-      assignments,
-      emptySeatIds,
-      updatedAt: timestamp,
-      type,
-      cycleId: currentCycleId,
-      activeStudentCount: activeStudents.length,
-    };
-
-    storageService.set(STORAGE_KEYS.CURRENT_ARRANGEMENT, arrangement);
-    storageService.set(STORAGE_KEYS.LAST_CYCLE_ID, currentCycleId);
-
-    this.addHistoryLog({
-      type,
-      description: description || (type === 'Manual' ? 'Pengacakan Manual oleh Admin' : 'Pengacakan Otomatis Mingguan'),
-      activeStudentCount: activeStudents.length,
-      cycleId: currentCycleId,
-      timestamp,
-    });
-
-    return arrangement;
-  },
-
-  /**
-   * Get activity history
+   * Get activity history from local cache
    */
   getHistory() {
     return storageService.get(STORAGE_KEYS.HISTORY, []);
   },
 
   /**
-   * Async fetch history from Supabase with local fallback
+   * Async fetch history from Supabase reroll_history table with local fallback
    */
   async fetchHistory() {
+    if (!isSupabaseConfigured) {
+      return this.getHistory();
+    }
+
     try {
       const { data, error } = await supabase
         .from('reroll_history')
@@ -171,7 +220,12 @@ export const seatingService = {
           id: h.id,
           timestamp: h.created_at,
           wibFormatted: formatWIBDateTime(h.created_at),
-          type: h.roll_type === 'automatic' ? 'Otomatis' : h.roll_type === 'manual' ? 'Manual' : 'Inisialisasi',
+          type:
+            h.roll_type === 'automatic'
+              ? 'Otomatis'
+              : h.roll_type === 'manual'
+              ? 'Manual'
+              : 'Inisialisasi',
           description: h.description,
           activeStudentCount: h.active_student_count,
           cycleId: h.cycle_id,
@@ -185,35 +239,19 @@ export const seatingService = {
     return this.getHistory();
   },
 
-  /**
-   * Add a log entry
-   */
-  addHistoryLog(entry) {
-    const history = this.getHistory();
-    const logItem = {
-      id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      timestamp: entry.timestamp || new Date().toISOString(),
-      wibFormatted: formatWIBDateTime(entry.timestamp || new Date()),
-      type: entry.type || 'Manual',
-      description: entry.description || 'Pengacakan tempat duduk',
-      activeStudentCount: entry.activeStudentCount || 0,
-      cycleId: entry.cycleId || getWeeklyCycleId(),
-    };
-
-    const updated = [logItem, ...history].slice(0, 50);
-    storageService.set(STORAGE_KEYS.HISTORY, updated);
-    return logItem;
-  },
-
   clearHistory() {
     storageService.set(STORAGE_KEYS.HISTORY, []);
     return true;
   },
 
   /**
-   * Supabase Realtime listener for live seating updates
+   * Supabase Realtime listener for live seating updates across student devices
    */
   subscribeToSeatingChanges(onUpdate) {
+    if (!isSupabaseConfigured) {
+      return () => {};
+    }
+
     try {
       const channel = supabase
         .channel('public:seating_periods')
@@ -221,7 +259,7 @@ export const seatingService = {
           'postgres_changes',
           { event: '*', schema: 'public', table: 'seating_periods' },
           async () => {
-            const latest = await seatingService.fetchActiveArrangement();
+            const latest = await this.fetchActiveArrangement();
             if (latest && onUpdate) onUpdate(latest);
           }
         )

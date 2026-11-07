@@ -57,7 +57,7 @@ export default function StudentManager({
   };
 
   // Submit add
-  const handleAddSubmit = (e) => {
+  const handleAddSubmit = async (e) => {
     e.preventDefault();
     const val = validateStudent(formData);
     if (!val.isValid) {
@@ -65,9 +65,11 @@ export default function StudentManager({
       return;
     }
 
-    onAddStudent(formData);
+    const result = await onAddStudent(formData);
+    if (result?.error) {
+      return;
+    }
     setAddModalOpen(false);
-    showNotification(`Siswa "${formData.nickname}" berhasil ditambahkan.`, 'success');
   };
 
   // Open edit modal
@@ -78,7 +80,7 @@ export default function StudentManager({
   };
 
   // Submit edit
-  const handleEditSubmit = (e) => {
+  const handleEditSubmit = async (e) => {
     e.preventDefault();
     const val = validateStudent(formData);
     if (!val.isValid) {
@@ -86,16 +88,20 @@ export default function StudentManager({
       return;
     }
 
-    onUpdateStudent(editStudent.id, formData);
+    const result = await onUpdateStudent(editStudent.id, formData);
+    if (result?.error) {
+      return;
+    }
     setEditStudent(null);
-    showNotification(`Data siswa "${formData.nickname}" berhasil diperbarui.`, 'success');
   };
 
   // Confirm delete
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!deleteStudent) return;
-    onDeleteStudent(deleteStudent.id);
-    showNotification(`Siswa "${deleteStudent.fullName}" berhasil dihapus.`, 'info');
+    const result = await onDeleteStudent(deleteStudent.id);
+    if (result?.error) {
+      return;
+    }
     setDeleteStudent(null);
   };
 

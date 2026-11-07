@@ -85,13 +85,17 @@ export const layoutService = {
   },
 
   async saveLayout(layout) {
-    storageService.set(STORAGE_KEY, layout);
-
     const token = authService.getSessionToken();
+
+    if (!token) {
+      return {
+        error: 'Sesi administrator tidak aktif atau telah kedaluwarsa. Silakan masuk kembali.',
+      };
+    }
 
     // All writes must go through the authenticated admin_save_layout RPC.
     // No direct unauthenticated fallback — the RPC validates the session server-side.
-    if (token && layout.id) {
+    if (layout.id) {
       try {
         const { data, error } = await supabase.rpc('admin_save_layout', {
           p_session_token: token,
@@ -102,16 +106,27 @@ export const layoutService = {
         });
 
         if (error) {
-          console.warn('[layoutService] admin_save_layout RPC error:', error.message);
-        } else if (!data?.success) {
-          console.warn('[layoutService] admin_save_layout rejected:', data?.error);
+          console.error('[layoutService] admin_save_layout RPC error:', error.message);
+          return {
+            error: error.message || 'Gagal menyimpan denah ke server.',
+          };
+        }
+
+        if (!data?.success) {
+          return {
+            error: data?.error || 'Server menolak pembaruan denah.',
+          };
         }
       } catch (err) {
-        console.warn('[layoutService] admin_save_layout exception:', err);
+        console.error('[layoutService] admin_save_layout exception:', err);
+        return {
+          error: 'Gagal terhubung ke database Supabase. Periksa koneksi internet Anda.',
+        };
       }
     }
 
-    return true;
+    storageService.set(STORAGE_KEY, layout);
+    return { success: true };
   },
 
   resetToDefault() {
