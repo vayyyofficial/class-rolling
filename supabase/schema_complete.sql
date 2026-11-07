@@ -6,8 +6,26 @@
 
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "pg_cron";
+
+-- Discover or initialize pgcrypto in appropriate schema
+DO $$
+DECLARE
+    v_schema TEXT;
+BEGIN
+    SELECT n.nspname INTO v_schema
+    FROM pg_extension e
+    JOIN pg_namespace n ON e.extnamespace = n.oid
+    WHERE e.extname = 'pgcrypto';
+
+    IF v_schema IS NULL THEN
+        BEGIN
+            CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA extensions;
+        EXCEPTION WHEN OTHERS THEN
+            CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+        END;
+    END IF;
+END $$;
 
 -- ====================================================================
 -- 2. CORE TABLES
@@ -157,6 +175,14 @@ CREATE TABLE IF NOT EXISTS public.admin_audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action TEXT NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- L. Saved Class Groups (Class Group Randomizer Results)
 CREATE TABLE IF NOT EXISTS public.saved_class_groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -181,10 +207,11 @@ CREATE INDEX IF NOT EXISTS idx_reroll_history_created ON public.reroll_history(c
 CREATE INDEX IF NOT EXISTS idx_saved_class_groups_created ON public.saved_class_groups(created_at DESC);
 
 -- ====================================================================
--- 4. CLEAN OBSOLETE OVERLOADS
+-- 4. CLEAN OBSOLETE OVERLOADS (NO CASCADE)
 -- ====================================================================
 DROP FUNCTION IF EXISTS public.execute_seating_reroll(TEXT, TEXT, UUID);
 DROP FUNCTION IF EXISTS public.is_admin();
+DROP FUNCTION IF EXISTS public.is_owner();
 
 -- ====================================================================
 -- 5. INTERNAL HELPER FUNCTIONS
@@ -193,7 +220,7 @@ CREATE OR REPLACE FUNCTION public.is_valid_admin_session(p_token TEXT)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 STABLE
 AS $$
 BEGIN
@@ -203,20 +230,22 @@ BEGIN
 
     RETURN EXISTS (
         SELECT 1 FROM public.admin_sessions
-        WHERE session_token_hash = encode(digest(p_token, 'sha256'), 'hex')
+        WHERE session_token_hash = encode(digest(p_token::bytea, 'sha256'), 'hex')
           AND expires_at > now()
     );
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.is_valid_admin_session(TEXT) TO postgres, service_role;
 
 CREATE OR REPLACE FUNCTION public.is_admin(p_token TEXT DEFAULT NULL)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 STABLE
 AS $$
 BEGIN
@@ -227,7 +256,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.is_admin(TEXT) TO postgres, service_role;
 
 -- ====================================================================
@@ -237,7 +268,7 @@ CREATE OR REPLACE FUNCTION public.cron_execute_weekly_reroll()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_layout_id UUID;
@@ -333,7 +364,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM anon;
+REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.cron_execute_weekly_reroll() TO postgres, service_role;
 
 -- ====================================================================
@@ -348,7 +381,7 @@ CREATE OR REPLACE FUNCTION public.execute_seating_reroll(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_layout_id UUID;
@@ -460,7 +493,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) TO anon, authenticated, service_role;
 
 -- ====================================================================
 -- 8. PUBLIC RPC: GET ACTIVE SEATING
@@ -469,7 +503,7 @@ CREATE OR REPLACE FUNCTION public.get_active_seating()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 STABLE
 AS $$
 DECLARE
@@ -514,10 +548,11 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_active_seating() TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.get_active_seating() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_active_seating() TO anon, authenticated, service_role;
 
 -- ====================================================================
--- 9. PRIVILEGED STUDENT MANAGEMENT RPC
+-- 9. PRIVILEGED STUDENT MANAGEMENT RPC (VERIFIES TARGET EXISTENCE)
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.admin_manage_student(
     p_session_token TEXT,
@@ -528,7 +563,7 @@ CREATE OR REPLACE FUNCTION public.admin_manage_student(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_new_student RECORD;
@@ -580,12 +615,16 @@ BEGIN
         END IF;
 
         UPDATE public.students
-        SET full_name = COALESCE(trim(p_payload->>'fullName'), full_name),
-            nickname = COALESCE(trim(p_payload->>'nickname'), nickname),
+        SET full_name = COALESCE(NULLIF(trim(p_payload->>'fullName'), ''), full_name),
+            nickname = COALESCE(NULLIF(trim(p_payload->>'nickname'), ''), nickname),
             is_active = COALESCE((p_payload->>'isActive')::BOOLEAN, is_active),
             updated_at = now()
         WHERE id = p_student_id
         RETURNING * INTO v_new_student;
+
+        IF NOT FOUND OR v_new_student.id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
 
         INSERT INTO public.admin_audit_logs (action, details)
         VALUES ('UPDATE_STUDENT', jsonb_build_object('student_id', p_student_id));
@@ -613,6 +652,10 @@ BEGIN
         WHERE id = p_student_id
         RETURNING * INTO v_new_student;
 
+        IF NOT FOUND OR v_new_student.id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
+
         INSERT INTO public.admin_audit_logs (action, details)
         VALUES ('TOGGLE_STUDENT_ACTIVE', jsonb_build_object('student_id', p_student_id, 'is_active', v_new_student.is_active));
 
@@ -628,6 +671,10 @@ BEGIN
             updated_at = now()
         WHERE id = p_student_id;
 
+        IF NOT FOUND THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
+
         INSERT INTO public.admin_audit_logs (action, details)
         VALUES ('DEACTIVATE_STUDENT', jsonb_build_object('student_id', p_student_id));
 
@@ -638,10 +685,11 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) TO anon, authenticated, service_role;
 
 -- ====================================================================
--- 10. PRIVILEGED LAYOUT MANAGEMENT RPC
+-- 10. PRIVILEGED LAYOUT MANAGEMENT RPC (VERIFIES TARGET EXISTENCE)
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.admin_save_layout(
     p_session_token TEXT,
@@ -653,19 +701,27 @@ CREATE OR REPLACE FUNCTION public.admin_save_layout(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
     IF NOT public.is_valid_admin_session(p_session_token) THEN
         RETURN jsonb_build_object('success', false, 'error', 'Sesi admin tidak valid atau telah kedaluwarsa.');
     END IF;
 
+    IF p_layout_id IS NULL THEN
+        RETURN jsonb_build_object('success', false, 'error', 'ID tata letak wajib disertakan.');
+    END IF;
+
     UPDATE public.classroom_layouts
-    SET name = COALESCE(p_name, name),
+    SET name = COALESCE(NULLIF(trim(p_name), ''), name),
         teacher_desk_position = COALESCE(p_desk_position, teacher_desk_position),
-        teacher_desk_label = COALESCE(p_desk_label, teacher_desk_label),
+        teacher_desk_label = COALESCE(NULLIF(trim(p_desk_label), ''), teacher_desk_label),
         updated_at = now()
     WHERE id = p_layout_id;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Data tata letak kelas tidak ditemukan.');
+    END IF;
 
     INSERT INTO public.admin_audit_logs (action, details)
     VALUES ('UPDATE_LAYOUT', jsonb_build_object('layout_id', p_layout_id));
@@ -674,7 +730,8 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
 
 -- ====================================================================
 -- 11. PASSWORD-ONLY AUTHENTICATION RPCs
@@ -683,7 +740,7 @@ CREATE OR REPLACE FUNCTION public.admin_verify_password(p_password TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_sec RECORD;
@@ -718,7 +775,7 @@ BEGIN
         WHERE id = 1;
 
         v_raw_token := encode(gen_random_bytes(32), 'hex');
-        v_token_hash := encode(digest(v_raw_token, 'sha256'), 'hex');
+        v_token_hash := encode(digest(v_raw_token::bytea, 'sha256'), 'hex');
         v_expires := now() + interval '24 hours';
 
         DELETE FROM public.admin_sessions WHERE expires_at < now();
@@ -749,7 +806,7 @@ CREATE OR REPLACE FUNCTION public.admin_verify_session(p_token TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_token_hash TEXT;
@@ -759,7 +816,7 @@ BEGIN
         RETURN jsonb_build_object('valid', false);
     END IF;
 
-    v_token_hash := encode(digest(p_token, 'sha256'), 'hex');
+    v_token_hash := encode(digest(p_token::bytea, 'sha256'), 'hex');
     SELECT * INTO v_session FROM public.admin_sessions WHERE session_token_hash = v_token_hash AND expires_at > now();
 
     IF v_session.id IS NOT NULL THEN
@@ -779,7 +836,7 @@ CREATE OR REPLACE FUNCTION public.admin_change_password(
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_sec RECORD;
@@ -815,7 +872,7 @@ BEGIN
     DELETE FROM public.admin_sessions;
 
     v_new_raw_token := encode(gen_random_bytes(32), 'hex');
-    v_new_token_hash := encode(digest(v_new_raw_token, 'sha256'), 'hex');
+    v_new_token_hash := encode(digest(v_new_raw_token::bytea, 'sha256'), 'hex');
     v_expires := now() + interval '24 hours';
 
     INSERT INTO public.admin_sessions (session_token_hash, expires_at) VALUES (v_new_token_hash, v_expires);
@@ -829,11 +886,11 @@ CREATE OR REPLACE FUNCTION public.admin_logout(p_token TEXT)
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 BEGIN
     IF p_token IS NOT NULL THEN
-        DELETE FROM public.admin_sessions WHERE session_token_hash = encode(digest(p_token, 'sha256'), 'hex');
+        DELETE FROM public.admin_sessions WHERE session_token_hash = encode(digest(p_token::bytea, 'sha256'), 'hex');
     END IF;
     RETURN jsonb_build_object('success', true);
 END;
@@ -843,7 +900,7 @@ CREATE OR REPLACE FUNCTION public.server_provision_admin_password(p_new_password
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public
+SET search_path = public, extensions
 AS $$
 DECLARE
     v_hash TEXT;
@@ -869,64 +926,95 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.admin_verify_password(TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_verify_session(TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.admin_logout(TEXT) TO anon, authenticated;
+REVOKE ALL ON FUNCTION public.admin_verify_password(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_verify_password(TEXT) TO anon, authenticated, service_role;
 
-REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.admin_verify_session(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_verify_session(TEXT) TO anon, authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.admin_logout(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.admin_logout(TEXT) TO anon, authenticated, service_role;
+
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres, service_role;
 
 -- ====================================================================
--- 12. ROW LEVEL SECURITY (RLS) POLICIES
+-- 12. DYNAMIC PG_POLICIES AUDIT & CLEANUP
 -- ====================================================================
-DROP POLICY IF EXISTS "Public can read active students" ON public.students;
-DROP POLICY IF EXISTS "Public can read students" ON public.students;
-DROP POLICY IF EXISTS "Admins can insert students" ON public.students;
-DROP POLICY IF EXISTS "Admins can update students" ON public.students;
-DROP POLICY IF EXISTS "Admins can delete students" ON public.students;
-DROP POLICY IF EXISTS "Block direct student writes" ON public.students;
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename IN (
+              'students',
+              'classroom_layouts',
+              'seats',
+              'seating_periods',
+              'seating_assignments',
+              'reroll_history',
+              'app_settings',
+              'admin_profiles',
+              'admin_invitations',
+              'admin_security',
+              'admin_sessions',
+              'admin_audit_logs',
+              'audit_logs',
+              'group_generations',
+              'group_generation_members'
+          )
+          AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+END $$;
 
-DROP POLICY IF EXISTS "Public can read layouts" ON public.classroom_layouts;
-DROP POLICY IF EXISTS "Admins can manage layouts" ON public.classroom_layouts;
-DROP POLICY IF EXISTS "Block direct layout writes" ON public.classroom_layouts;
-
-DROP POLICY IF EXISTS "Public can read seats" ON public.seats;
-DROP POLICY IF EXISTS "Admins can manage seats" ON public.seats;
-DROP POLICY IF EXISTS "Block direct seat writes" ON public.seats;
-
-DROP POLICY IF EXISTS "Public can read seating periods" ON public.seating_periods;
-DROP POLICY IF EXISTS "Admins can manage seating periods" ON public.seating_periods;
-DROP POLICY IF EXISTS "Block direct period writes" ON public.seating_periods;
-
-DROP POLICY IF EXISTS "Public can read seating assignments" ON public.seating_assignments;
-DROP POLICY IF EXISTS "Admins can manage seating assignments" ON public.seating_assignments;
-DROP POLICY IF EXISTS "Block direct assignment writes" ON public.seating_assignments;
-
-DROP POLICY IF EXISTS "Public can read reroll history" ON public.reroll_history;
-DROP POLICY IF EXISTS "Admins can insert reroll history" ON public.reroll_history;
-DROP POLICY IF EXISTS "Block direct history writes" ON public.reroll_history;
-
-DROP POLICY IF EXISTS "Public can read app settings" ON public.app_settings;
-DROP POLICY IF EXISTS "Admins can manage settings" ON public.app_settings;
-
-DROP POLICY IF EXISTS "Admins can view admin profiles" ON public.admin_profiles;
-DROP POLICY IF EXISTS "Owners can manage admin profiles" ON public.admin_profiles;
-DROP POLICY IF EXISTS "No direct access to admin_profiles" ON public.admin_profiles;
-
-DROP POLICY IF EXISTS "No direct access to admin_invitations" ON public.admin_invitations;
-DROP POLICY IF EXISTS "No direct access to admin_security" ON public.admin_security;
-DROP POLICY IF EXISTS "No direct access to admin_sessions" ON public.admin_sessions;
-DROP POLICY IF EXISTS "No direct access to admin_audit_logs" ON public.admin_audit_logs;
-
-DROP POLICY IF EXISTS "Public can read group generations" ON public.group_generations;
-DROP POLICY IF EXISTS "Public can read group members" ON public.group_generation_members;
-DROP POLICY IF EXISTS "Admins can delete group generations" ON public.group_generations;
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT schemaname, tablename, policyname
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename IN (
+              'students',
+              'classroom_layouts',
+              'seats',
+              'seating_periods',
+              'seating_assignments',
+              'reroll_history',
+              'app_settings',
+              'admin_profiles',
+              'admin_invitations',
+              'admin_security',
+              'admin_sessions',
+              'admin_audit_logs',
+              'audit_logs',
+              'group_generations',
+              'group_generation_members'
+          )
+          AND cmd = 'SELECT'
+    ) LOOP
+        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
+    END LOOP;
+END $$;
 
 DROP POLICY IF EXISTS "Public can view saved class groups" ON public.saved_class_groups;
 DROP POLICY IF EXISTS "Public can insert saved class groups" ON public.saved_class_groups;
 DROP POLICY IF EXISTS "Public can delete saved class groups" ON public.saved_class_groups;
 
+-- ====================================================================
+-- 13. ENABLE ROW LEVEL SECURITY ON ALL TABLES
+-- ====================================================================
 ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.classroom_layouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.seats ENABLE ROW LEVEL SECURITY;
@@ -943,6 +1031,13 @@ ALTER TABLE public.group_generations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.group_generation_members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.saved_class_groups ENABLE ROW LEVEL SECURITY;
 
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'audit_logs') THEN
+        ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+    END IF;
+END $$;
+
 CREATE POLICY "Public can read students" ON public.students FOR SELECT USING (true);
 CREATE POLICY "Public can read layouts" ON public.classroom_layouts FOR SELECT USING (true);
 CREATE POLICY "Public can read seats" ON public.seats FOR SELECT USING (true);
@@ -958,7 +1053,7 @@ CREATE POLICY "Public can insert saved class groups" ON public.saved_class_group
 CREATE POLICY "Public can delete saved class groups" ON public.saved_class_groups FOR DELETE USING (true);
 
 -- ====================================================================
--- 13. TABLE PRIVILEGE HARDENING
+-- 14. TABLE PRIVILEGE HARDENING
 -- ====================================================================
 REVOKE INSERT, UPDATE, DELETE ON public.students FROM anon, authenticated;
 REVOKE INSERT, UPDATE, DELETE ON public.classroom_layouts FROM anon, authenticated;
@@ -988,8 +1083,39 @@ REVOKE ALL ON public.admin_audit_logs FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.admin_profiles FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON public.admin_invitations FROM PUBLIC, anon, authenticated;
 
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'audit_logs') THEN
+        REVOKE ALL ON public.audit_logs FROM PUBLIC, anon, authenticated;
+    END IF;
+END $$;
+
 -- ====================================================================
--- 14. REALTIME PUBLICATION
+-- 15. DYNAMIC SEARCH_PATH CONFIGURATION FOR PGCRYPTO FUNCTIONS
+-- ====================================================================
+DO $$
+DECLARE
+    v_ext_schema TEXT;
+BEGIN
+    SELECT n.nspname INTO v_ext_schema
+    FROM pg_extension e
+    JOIN pg_namespace n ON e.extnamespace = n.oid
+    WHERE e.extname = 'pgcrypto';
+
+    IF v_ext_schema IS NOT NULL THEN
+        EXECUTE format('ALTER FUNCTION public.is_valid_admin_session(TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.admin_verify_password(TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.admin_verify_session(TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.admin_logout(TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.server_provision_admin_password(TEXT) SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.cron_execute_weekly_reroll() SET search_path = public, %I', v_ext_schema);
+        EXECUTE format('ALTER FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) SET search_path = public, %I', v_ext_schema);
+    END IF;
+END $$;
+
+-- ====================================================================
+-- 16. REALTIME PUBLICATION
 -- ====================================================================
 DO $$
 BEGIN
@@ -1002,7 +1128,7 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN END $$;
 
 -- ====================================================================
--- 15. SEED DATA (IF NOT ALREADY SEEDED)
+-- 17. SEED DATA (SAFE IF NOT ALREADY POPULATED)
 -- ====================================================================
 INSERT INTO public.students (number, full_name, nickname, is_active)
 VALUES
@@ -1080,7 +1206,7 @@ BEGIN
 END $$;
 
 -- ====================================================================
--- 16. CRON SCHEDULER REGISTRATION
+-- 18. CRON SCHEDULER REGISTRATION
 -- ====================================================================
 DO $$
 BEGIN
