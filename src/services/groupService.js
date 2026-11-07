@@ -1,52 +1,43 @@
-import { supabase } from './supabase';
-import { storageService } from './storageService';
-import { studentService } from './studentService';
-import { shuffleArray } from '../utils/randomizer';
+/**
+ * CLASS ROLLING - Group Randomizer Service
+ * Independent classroom utility for subject assignments, projects, and activities.
+ * Generates balanced, unbiased groups and supports permanent saving with subject & submitter metadata.
+ */
+
+import { supabase } from './supabase.js';
+import { storageService } from './storageService.js';
+import { studentService } from './studentService.js';
+import { shuffleArray } from '../utils/randomizer.js';
 
 const STORAGE_KEYS = {
-  CURRENT_GROUPS: 'current_group_generation',
-  GROUP_HISTORY: 'group_generations_history',
+  CURRENT_UNSAVED: 'current_unsaved_groups',
+  SAVED_GROUPS_LIST: 'saved_class_groups_list',
 };
 
 export const groupService = {
   /**
-   * Generates balanced groups from active students.
-   * If Supabase is available and migration applied, calls RPC `generate_groups`.
-   * Otherwise uses local Fisher-Yates and saves to storage.
+   * Generates a new, balanced randomization of students.
+   * This is in-memory / unsaved until the user explicitly saves it.
+   *
+   * @param {number} numGroups - Number of groups (2 to 26)
+   * @returns {Object} Unsaved generation result
    */
-  async generateGroups(numGroups = 4, userId = null) {
+  generateGroups(numGroups = 4) {
     if (numGroups < 2 || numGroups > 26) {
       throw new Error('Jumlah kelompok harus antara 2 dan 26 kelompok.');
     }
 
-    // Try Supabase RPC first
-    try {
-      const { data, error } = await supabase.rpc('generate_groups', {
-        p_num_groups: numGroups,
-        p_user_id: userId,
-      });
-
-      if (!error && data?.success) {
-        // Fetch full generated groups with student details
-        const fullGroups = await this.getLatestGroupGeneration();
-        if (fullGroups) {
-          storageService.set(STORAGE_KEYS.CURRENT_GROUPS, fullGroups);
-          return fullGroups;
-        }
-      }
-    } catch (err) {
-      console.warn('[groupService] Supabase RPC fallback to local algorithm:', err);
-    }
-
-    // Fallback: Balanced client-side Fisher-Yates algorithm
-    const students = await studentService.getStudents();
+    const students = studentService.getStudents();
     const activeStudents = students.filter((s) => s.isActive !== false);
 
     if (activeStudents.length < numGroups) {
-      throw new Error(`Jumlah siswa (${activeStudents.length}) kurang dari jumlah kelompok (${numGroups}).`);
+      throw new Error(`Jumlah siswa aktif (${activeStudents.length}) kurang dari ${numGroups} kelompok.`);
     }
 
+    // Unbiased Fisher-Yates shuffle
     const shuffled = shuffleArray(activeStudents);
+
+    // Initialize groups
     const groups = Array.from({ length: numGroups }, (_, i) => ({
       groupNumber: i + 1,
       name: `Kelompok ${i + 1}`,
@@ -56,111 +47,187 @@ export const groupService = {
     // Round-robin distribution for perfectly balanced group sizes
     shuffled.forEach((student, index) => {
       const groupIndex = index % numGroups;
-      groups[groupIndex].members.push(student);
+      groups[groupIndex].members.push({
+        id: student.id,
+        number: student.number,
+        fullName: student.fullName,
+        nickname: student.nickname,
+      });
     });
 
     const generation = {
-      id: `grp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      id: `temp-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: new Date().toISOString(),
       numGroups,
       studentCount: activeStudents.length,
       groups,
+      isSaved: false,
     };
 
-    // Save locally
-    storageService.set(STORAGE_KEYS.CURRENT_GROUPS, generation);
-
-    // Add to history
-    const history = this.getGroupHistory();
-    const updatedHistory = [generation, ...history].slice(0, 30);
-    storageService.set(STORAGE_KEYS.GROUP_HISTORY, updatedHistory);
+    // Store as current working generation
+    storageService.set(STORAGE_KEYS.CURRENT_UNSAVED, generation);
 
     return generation;
   },
 
   /**
-   * Retrieves the latest generated groups (from Supabase or storage)
+   * Get the current active working generation (if any)
    */
-  async getLatestGroupGeneration() {
-    try {
-      const { data: gen, error: genErr } = await supabase
-        .from('group_generations')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
+  getCurrentUnsaved() {
+    return storageService.get(STORAGE_KEYS.CURRENT_UNSAVED, null);
+  },
 
-      if (!genErr && gen) {
-        // Get members with student info
-        const { data: members, error: memErr } = await supabase
-          .from('group_generation_members')
-          .select(`
-            group_number,
-            students:student_id (id, number, full_name, nickname, is_active)
-          `)
-          .eq('group_generation_id', gen.id)
-          .order('group_number', { ascending: true });
-
-        if (!memErr && members) {
-          const groupMap = {};
-          for (let i = 1; i <= gen.num_groups; i++) {
-            groupMap[i] = {
-              groupNumber: i,
-              name: `Kelompok ${i}`,
-              members: [],
-            };
-          }
-
-          members.forEach((m) => {
-            if (m.students && groupMap[m.group_number]) {
-              groupMap[m.group_number].members.push({
-                id: m.students.id,
-                number: m.students.number,
-                fullName: m.students.full_name,
-                nickname: m.students.nickname,
-                isActive: m.students.is_active,
-              });
-            }
-          });
-
-          const result = {
-            id: gen.id,
-            createdAt: gen.created_at,
-            numGroups: gen.num_groups,
-            studentCount: gen.student_count,
-            groups: Object.values(groupMap),
-          };
-
-          storageService.set(STORAGE_KEYS.CURRENT_GROUPS, result);
-          return result;
-        }
-      }
-    } catch (err) {
-      console.warn('[groupService] Failed to fetch groups from Supabase:', err);
+  /**
+   * Save group results with category, subject, and submitter.
+   * Never overwrites previously saved groups.
+   */
+  async saveGroup({
+    category = 'Tugas Kelompok',
+    subject,
+    submittedByStudentId,
+    submittedByName,
+    numGroups,
+    studentCount,
+    groups,
+  }) {
+    if (!subject || !subject.trim()) {
+      throw new Error('Mata pelajaran wajib diisi.');
+    }
+    if (!submittedByName || !submittedByName.trim()) {
+      throw new Error('Nama penyimpan (siswa) wajib dipilih.');
     }
 
-    return storageService.get(STORAGE_KEYS.CURRENT_GROUPS, null);
+    const cleanSubject = subject.trim();
+    const cleanCategory = category.trim();
+    const nowIso = new Date().toISOString();
+
+    const recordPayload = {
+      category: cleanCategory,
+      subject: cleanSubject,
+      submitted_by_student_id: submittedByStudentId || null,
+      submitted_by_name: submittedByName.trim(),
+      num_groups: numGroups,
+      student_count: studentCount,
+      groups_data: groups,
+      created_at: nowIso,
+    };
+
+    // 1. Try saving to Supabase table
+    let savedId = `saved-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    try {
+      const { data, error } = await supabase
+        .from('saved_class_groups')
+        .insert(recordPayload)
+        .select()
+        .single();
+
+      if (!error && data?.id) {
+        savedId = data.id;
+      }
+    } catch (err) {
+      console.warn('[groupService] Supabase save error, storing locally:', err);
+    }
+
+    const savedRecord = {
+      id: savedId,
+      category: cleanCategory,
+      subject: cleanSubject,
+      submittedByStudentId,
+      submittedByName: submittedByName.trim(),
+      numGroups,
+      studentCount,
+      groups,
+      createdAt: nowIso,
+      isSaved: true,
+    };
+
+    // 2. Add to local saved groups list (prepend so newest is first)
+    const localList = storageService.get(STORAGE_KEYS.SAVED_GROUPS_LIST, []);
+    const updatedList = [savedRecord, ...localList.filter((item) => item.id !== savedId)];
+    storageService.set(STORAGE_KEYS.SAVED_GROUPS_LIST, updatedList);
+
+    // Update current working generation as saved
+    storageService.set(STORAGE_KEYS.CURRENT_UNSAVED, savedRecord);
+
+    return savedRecord;
   },
 
   /**
-   * Gets history of past group generations
+   * Retrieve list of all previously saved groups.
+   * Combines Supabase records with local storage cache.
    */
-  getGroupHistory() {
-    return storageService.get(STORAGE_KEYS.GROUP_HISTORY, []);
+  async fetchSavedGroups() {
+    try {
+      const { data, error } = await supabase
+        .from('saved_class_groups')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        const mapped = data.map((item) => ({
+          id: item.id,
+          category: item.category || 'Tugas Kelompok',
+          subject: item.subject,
+          submittedByStudentId: item.submitted_by_student_id,
+          submittedByName: item.submitted_by_name,
+          numGroups: item.num_groups,
+          studentCount: item.student_count,
+          groups: item.groups_data || [],
+          createdAt: item.created_at,
+          isSaved: true,
+        }));
+
+        storageService.set(STORAGE_KEYS.SAVED_GROUPS_LIST, mapped);
+        return mapped;
+      }
+    } catch (err) {
+      console.warn('[groupService] Supabase fetch saved groups error:', err);
+    }
+
+    return storageService.get(STORAGE_KEYS.SAVED_GROUPS_LIST, []);
   },
 
   /**
-   * Formats group results into clean text for copying to WhatsApp / chat
+   * Delete a saved group record
+   */
+  async deleteSavedGroup(id) {
+    try {
+      await supabase.from('saved_class_groups').delete().eq('id', id);
+    } catch {
+      // Ignore network errors
+    }
+
+    const localList = storageService.get(STORAGE_KEYS.SAVED_GROUPS_LIST, []);
+    const filtered = localList.filter((item) => item.id !== id);
+    storageService.set(STORAGE_KEYS.SAVED_GROUPS_LIST, filtered);
+    return true;
+  },
+
+  /**
+   * Format group results into clean text for copying to WhatsApp / chat
    */
   formatGroupsForCopy(generation) {
     if (!generation || !generation.groups) return '';
 
     const lines = [
-      `*HASIL PEMBAGIAN KELOMPOK — RUANGKELAS*`,
-      `📅 Tanggal: ${new Date(generation.createdAt).toLocaleDateString('id-ID', { dateStyle: 'full' })}`,
-      `👥 Total: ${generation.studentCount} Siswa | ${generation.numGroups} Kelompok`,
-      `────────────────────────────`,
+      `*HASIL PEMBAGIAN KELOMPOK — CLASS ROLLING*`,
     ];
+
+    if (generation.subject) {
+      lines.push(`📚 Mata Pelajaran: *${generation.subject}*`);
+    }
+    if (generation.category) {
+      lines.push(`📌 Kategori: ${generation.category}`);
+    }
+    if (generation.submittedByName) {
+      lines.push(`👤 Disimpan Oleh: ${generation.submittedByName}`);
+    }
+
+    lines.push(
+      `📅 Waktu: ${new Date(generation.createdAt).toLocaleDateString('id-ID', { dateStyle: 'full' })}`,
+      `👥 Total: ${generation.studentCount} Siswa | ${generation.numGroups} Kelompok`,
+      `────────────────────────────`
+    );
 
     generation.groups.forEach((g) => {
       lines.push(`\n*${g.name}* (${g.members.length} Siswa):`);
@@ -169,23 +236,23 @@ export const groupService = {
       });
     });
 
-    lines.push(`\n_Dibuat otomatis oleh RuangKelas_`);
+    lines.push(`\n_Dibuat via Class Rolling_`);
     return lines.join('\n');
   },
 
   /**
-   * Subscribe to Supabase Realtime for instant group updates
+   * Subscribe to Realtime updates for saved class groups
    */
-  subscribeToGroupChanges(onUpdate) {
+  subscribeToSavedGroups(onUpdate) {
     try {
       const channel = supabase
-        .channel('public:group_generations')
+        .channel('public:saved_class_groups')
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'group_generations' },
+          { event: '*', schema: 'public', table: 'saved_class_groups' },
           async () => {
-            const latest = await groupService.getLatestGroupGeneration();
-            if (latest && onUpdate) onUpdate(latest);
+            const latest = await groupService.fetchSavedGroups();
+            if (onUpdate) onUpdate(latest);
           }
         )
         .subscribe();
@@ -198,4 +265,3 @@ export const groupService = {
     }
   },
 };
-

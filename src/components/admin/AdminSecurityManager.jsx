@@ -83,7 +83,7 @@ export default function AdminSecurityManager({ showNotification }) {
               Keamanan Akun &amp; Kata Sandi Administrator
             </h3>
             <p className="text-xs text-content-secondary mt-1 max-w-xl leading-relaxed">
-              Sistem otentikasi RuangKelas menggunakan verifikasi berbasis server dengan enkripsi kuat Bcrypt (cost 12), perlindungan serangan brute-force, dan token sesi kriptografis.
+              Sistem otentikasi Class Rolling menggunakan verifikasi berbasis server dengan enkripsi kuat Bcrypt (cost 12), perlindungan serangan brute-force, dan token sesi kriptografis.
             </p>
           </div>
         </div>
@@ -247,3 +247,4 @@ export default function AdminSecurityManager({ showNotification }) {
     </div>
   );
 }
+

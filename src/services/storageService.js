@@ -1,10 +1,10 @@
 /**
- * RUANGKELAS - Storage Service
+ * CLASS ROLLING - Storage Service
  * Abstraction layer for browser localStorage with memory fallback and error protection.
  */
 
-const STORAGE_PREFIX = 'ruangkelas_v1_';
-const LEGACY_PREFIX = 'seatflow_v1_';
+const STORAGE_PREFIX = 'classrolling_v1_';
+const LEGACY_PREFIXES = ['ruangkelas_v1_', 'seatflow_v1_'];
 
 class MemoryStorage {
   constructor() {
@@ -43,12 +43,15 @@ export const storageService = {
     try {
       let serialized = backendStorage.getItem(STORAGE_PREFIX + key);
 
-      // Seamless migration from legacy seatflow prefix if not found
+      // Seamless migration from legacy prefixes if not found
       if (serialized === null || serialized === undefined) {
-        const legacy = backendStorage.getItem(LEGACY_PREFIX + key);
-        if (legacy !== null && legacy !== undefined) {
-          backendStorage.setItem(STORAGE_PREFIX + key, legacy);
-          serialized = legacy;
+        for (const legacyPrefix of LEGACY_PREFIXES) {
+          const legacy = backendStorage.getItem(legacyPrefix + key);
+          if (legacy !== null && legacy !== undefined) {
+            backendStorage.setItem(STORAGE_PREFIX + key, legacy);
+            serialized = legacy;
+            break;
+          }
         }
       }
 
@@ -76,7 +79,7 @@ export const storageService = {
   remove(key) {
     try {
       backendStorage.removeItem(STORAGE_PREFIX + key);
-      backendStorage.removeItem(LEGACY_PREFIX + key);
+      LEGACY_PREFIXES.forEach((lp) => backendStorage.removeItem(lp + key));
       return true;
     } catch (err) {
       console.error(`[storageService] Error removing key "${key}":`, err);
@@ -88,7 +91,10 @@ export const storageService = {
     try {
       if (backendStorage === window.localStorage) {
         Object.keys(window.localStorage).forEach((k) => {
-          if (k.startsWith(STORAGE_PREFIX) || k.startsWith(LEGACY_PREFIX)) {
+          if (
+            k.startsWith(STORAGE_PREFIX) ||
+            LEGACY_PREFIXES.some((lp) => k.startsWith(lp))
+          ) {
             window.localStorage.removeItem(k);
           }
         });

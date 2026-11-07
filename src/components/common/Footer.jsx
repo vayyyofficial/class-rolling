@@ -11,9 +11,9 @@ export default function Footer({ onOpenAdminLogin }) {
           {/* Brand & Purpose */}
           <div className="flex items-center gap-2.5">
             <div className="w-6 h-6 rounded-md bg-brand-600 flex items-center justify-center text-white font-bold text-[10px]">
-              RK
+              CR
             </div>
-            <span className="font-bold text-sm text-content-primary">RuangKelas</span>
+            <span className="font-bold text-sm text-content-primary">Class Rolling</span>
             <span className="text-gray-300">|</span>
             <span className="text-[11px] text-content-secondary">
               Denah Tempat Duduk &amp; Pembagi Kelompok 26 Siswa
@@ -22,7 +22,7 @@ export default function Footer({ onOpenAdminLogin }) {
 
           {/* Copyright & Discreet Admin Access */}
           <div className="flex items-center gap-4 text-[11px]">
-            <span>&copy; {CURRENT_YEAR} RuangKelas. Hak cipta dilindungi.</span>
+            <span>&copy; {CURRENT_YEAR} Class Rolling. Hak cipta dilindungi.</span>
             {onOpenAdminLogin && (
               <button
                 onClick={onOpenAdminLogin}

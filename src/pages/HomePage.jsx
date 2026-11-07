@@ -11,6 +11,7 @@ import {
   Shield,
   Armchair,
   Users2,
+  Sparkles,
 } from 'lucide-react';
 
 export default function HomePage({
@@ -42,30 +43,30 @@ export default function HomePage({
             {/* Left Column: Heading & Value Prop */}
             <div className="max-w-2xl space-y-4">
               <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-brand-50 border border-brand-200 text-brand-700 text-xs font-semibold">
-                <span className="w-2 h-2 rounded-full bg-brand-600 animate-pulse" />
-                Sistem Rotasi Mingguan Kelas 26 Siswa
+                <Sparkles className="w-3.5 h-3.5 text-brand-600" />
+                Rotasi Mingguan &amp; Pembagi Kelompok 26 Siswa
               </div>
 
               <h1 className="text-3xl sm:text-4xl lg:text-5xl font-extrabold text-content-primary tracking-tight leading-[1.15]">
-                Denah Tempat Duduk Kelas Yang{' '}
-                <span className="text-brand-600">Adil & Transparan</span>
+                Denah Duduk Kelas &amp;{' '}
+                <span className="text-brand-600">Acak Kelompok</span>
               </h1>
 
               <p className="text-sm sm:text-base text-content-secondary leading-relaxed">
-                RuangKelas mengelola susunan 26 siswa kelas dalam 3 blok ruangan dengan rotasi otomatis setiap pekan serta pembagian kelompok acak. Seluruh siswa dapat mengecek meja duduknya tanpa perlu login.
+                Class Rolling membantu kita melihat posisi meja duduk kelas setiap minggu dan membagi kelompok tugas dengan cepat tanpa ribet.
               </p>
 
               {/* Quick stats pills */}
               <div className="flex flex-wrap items-center gap-3 pt-2">
                 <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-divider shadow-subtle text-xs">
                   <Users className="w-4 h-4 text-brand-600" />
-                  <span className="text-content-secondary">Total Siswa:</span>
-                  <strong className="text-content-primary">{activeStudents.length} Siswa Aktif</strong>
+                  <span className="text-content-secondary">Total:</span>
+                  <strong className="text-content-primary">{activeStudents.length} Siswa</strong>
                 </div>
 
                 <div className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white border border-divider shadow-subtle text-xs">
                   <Armchair className="w-4 h-4 text-brand-600" />
-                  <span className="text-content-secondary">Total Posisi:</span>
+                  <span className="text-content-secondary">Kapasitas:</span>
                   <strong className="text-content-primary">28 Kursi (2 Kosong)</strong>
                 </div>
 
@@ -81,7 +82,7 @@ export default function HomePage({
                     className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-brand-50 hover:bg-brand-100 text-brand-700 border border-brand-200 text-xs font-semibold shadow-subtle transition-all"
                   >
                     <Users2 className="w-4 h-4 text-brand-600" />
-                    <span>Group Randomizer &rarr;</span>
+                    <span>Acak Kelompok Tugas &rarr;</span>
                   </button>
                 )}
               </div>
@@ -97,14 +98,14 @@ export default function HomePage({
                   </span>
                 </div>
                 <Badge variant="primary" size="xs">
-                  Otomatis
+                  Mingguan
                 </Badge>
               </div>
 
               <Countdown compact={false} />
 
               <div className="pt-3 border-t border-divider text-[11px] text-content-secondary flex items-center justify-between">
-                <span>Diperbarui terakhir:</span>
+                <span>Pembaruan terakhir:</span>
                 <span className="font-semibold text-content-primary">
                   {formatWIBShort(currentArrangement?.updatedAt)}
                 </span>
@@ -128,7 +129,7 @@ export default function HomePage({
                 </Badge>
               </div>
               <p className="text-xs text-content-secondary mt-1">
-                Tampilan visual 3 blok ruangan kelas. Klik pada salah satu meja untuk melihat profil siswa.
+                Tampilan meja dalam 3 blok ruangan. Klik salah satu meja untuk melihat profil siswa.
               </p>
             </div>
 
@@ -168,48 +169,48 @@ export default function HomePage({
         </div>
       </section>
 
-      {/* 4. Weekly Schedule & Rules Information */}
+      {/* 4. Weekly Rotation Information — Short, Clear & Student-Friendly */}
       <section id="jadwal-reroll" className="scroll-mt-24">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="bg-white rounded-2xl border border-divider shadow-subtle p-6 sm:p-8 space-y-6">
             <div>
               <h3 className="text-lg font-bold text-content-primary flex items-center gap-2">
                 <Calendar className="w-5 h-5 text-brand-600" />
-                Ketentuan & Cara Kerja Rotasi Mingguan
+                Ketentuan &amp; Cara Kerja Rotasi Mingguan
               </h3>
               <p className="text-xs text-content-secondary mt-1">
-                Prinsip transparansi pengacakan tempat duduk RuangKelas untuk kenyamanan bersama.
+                Informasi jadwal pergantian tempat duduk kelas kita.
               </p>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-2">
-                <div className="w-8 h-8 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs">
-                  01
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-1.5">
+                <div className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs mb-2">
+                  1
                 </div>
-                <h4 className="text-xs font-bold text-content-primary">Jadwal Pasti Setiap Minggu</h4>
+                <h4 className="text-xs font-bold text-content-primary">Otomatis Tiap Minggu</h4>
                 <p className="text-xs text-content-secondary leading-relaxed">
-                  Pengacakan otomatis dieksekusi setiap hari Minggu tepat pukul 06:00 WIB (Waktu Indonesia Barat) sehingga denah baru siap sebelum kegiatan belajar mengajar dimulai hari Senin.
+                  Tempat duduk otomatis berganti setiap hari <strong>Minggu pukul 06:00 WIB</strong> agar denah baru sudah siap sebelum kita masuk kelas di hari Senin.
                 </p>
               </div>
 
-              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-2">
-                <div className="w-8 h-8 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs">
-                  02
+              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-1.5">
+                <div className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs mb-2">
+                  2
                 </div>
-                <h4 className="text-xs font-bold text-content-primary">Algoritma Acak Tanpa Bias</h4>
+                <h4 className="text-xs font-bold text-content-primary">Bisa Diacak Manual</h4>
                 <p className="text-xs text-content-secondary leading-relaxed">
-                  Seluruh 26 siswa aktif diacak menggunakan algoritma Fisher-Yates (Knuth shuffle) yang adil secara matematis, memastikan peluang yang sama bagi setiap siswa untuk menempati tiap posisi.
+                  Pengurus kelas juga bisa mengacak tempat duduk secara manual sewaktu-waktu jika ada instruksi khusus dari wali kelas atau guru.
                 </p>
               </div>
 
-              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-2">
-                <div className="w-8 h-8 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs">
-                  03
+              <div className="p-4 rounded-xl bg-canvas border border-divider space-y-1.5">
+                <div className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 font-bold flex items-center justify-center text-xs mb-2">
+                  3
                 </div>
-                <h4 className="text-xs font-bold text-content-primary">Stabil Selama Sepekan</h4>
+                <h4 className="text-xs font-bold text-content-primary">Jadwal Mingguan Tetap Aman</h4>
                 <p className="text-xs text-content-secondary leading-relaxed">
-                  Susunan tempat duduk yang telah dihasilkan akan terkunci dan tetap aktif sepanjang minggu. Denah tidak akan berubah hanya karena halaman web di-refresh atau dibuka oleh siswa lain.
+                  Pengacakan manual tidak mengganggu atau membatalkan jadwal rotasi otomatis hari Minggu berikutnya.
                 </p>
               </div>
             </div>
@@ -217,13 +218,13 @@ export default function HomePage({
             <div className="p-4 rounded-xl bg-brand-50/50 border border-brand-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-brand-900">
               <div className="flex items-center gap-2.5">
                 <Shield className="w-4 h-4 text-brand-600 flex-shrink-0" />
-                <span>Pengurus kelas membutuhkan acak ulang khusus atau ingin mengubah tata letak meja?</span>
+                <span>Pengurus kelas ingin mengacak ulang khusus atau menyesuaikan tata letak meja?</span>
               </div>
               <button
                 onClick={onOpenAdminLogin}
                 className="font-bold text-brand-700 hover:text-brand-800 hover:underline flex-shrink-0"
               >
-                Masuk ke Panel Admin &rarr;
+                Masuk ke Panel Pengurus &rarr;
               </button>
             </div>
           </div>

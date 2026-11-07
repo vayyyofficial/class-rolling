@@ -1,6 +1,6 @@
-# RuangKelas — Class Seating Management & Group Randomizer
+# Class Rolling — Class Seating Management & Group Randomizer
 
-Platform utilitas kelas modern dan profesional yang dirancang khusus untuk kelas berkapasitas **26 siswa**. Menampilkan dua fitur utama: **Denah Tempat Duduk Kelas** dengan rotasi otomatis mingguan dan **Group Randomizer** pembagi kelompok acak yang seimbang.
+Platform utilitas kelas modern dan profesional yang dirancang khusus untuk kelas berkapasitas **26 siswa**. Menampilkan dua fitur utama: **Denah Tempat Duduk Kelas** dengan rotasi otomatis mingguan dan **Group Randomizer** pembagi kelompok acak untuk tugas dan proyek mata pelajaran.
 
 Dibangun dengan React 19, Tailwind CSS, Vite, dan Supabase PostgreSQL.
 
@@ -69,7 +69,7 @@ Isi konfigurasi Supabase Anda:
 ```env
 VITE_SUPABASE_URL=https://mhsxrfuyizcmdcfhmruu.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_VsdBt4QmNKtPteLAhjXTlQ_YT7hov_z
-VITE_APP_NAME=RuangKelas
+VITE_APP_NAME=Class Rolling
 VITE_CLASS_SIZE=26
 VITE_TIMEZONE=Asia/Jakarta
 ```
@@ -86,6 +86,7 @@ npm run dev
 Jalankan skrip berikut di **Supabase SQL Editor**:
 1. `supabase/schema_complete.sql` (Skema lengkap tabel, data awal 26 siswa, tata letak 3 blok, dan RPCs).
 2. `supabase/migrations/20261107000000_password_auth.sql` (Sistem keamanan otentikasi sandi & audit logs).
+3. `supabase/migrations/20261107000001_saved_class_groups.sql` (Tabel penyimpanan kelompok tugas mata pelajaran).
 
 ### Inisialisasi / Reset Kata Sandi Admin (Server-Side Provisioning)
 Jalankan query ini di Supabase SQL Editor untuk menyetel kata sandi admin pertama kali atau memulihkannya:
@@ -108,5 +109,5 @@ Untuk menghubungkan repositori ke Netlify:
 2. Tambahkan Environment Variable di Netlify (`Site configuration` -> `Environment variables`):
    - `VITE_SUPABASE_URL`
    - `VITE_SUPABASE_PUBLISHABLE_KEY`
-   - `VITE_APP_NAME` (opsional: `RuangKelas`)
+   - `VITE_APP_NAME` (opsional: `Class Rolling`)
 3. Jalankan deploy.

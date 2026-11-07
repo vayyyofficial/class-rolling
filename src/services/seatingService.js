@@ -69,7 +69,6 @@ export const seatingService = {
     const lastCycleId = storageService.get(STORAGE_KEYS.LAST_CYCLE_ID, null);
 
     if (lastCycleId && lastCycleId !== currentCycleId) {
-      console.log(`[Scheduler] Cycle transition detected (${lastCycleId} -> ${currentCycleId}). Executing scheduled weekly reroll.`);
       return this.executeReroll('Otomatis', 'Rotasi Otomatis Mingguan (Jadwal Minggu 06:00 WIB)');
     }
 
@@ -83,8 +82,10 @@ export const seatingService = {
   /**
    * Execute seating reroll (manual or automatic).
    * NOTE: Manual reroll NEVER cancels or postpones the upcoming Sunday 06:00 WIB automatic roll!
+   * Authorization is validated server-side via the session token.
+   * Never trust a browser-supplied admin UUID for authorization.
    */
-  async executeRerollAsync(type = 'Manual', description = '', adminId = null) {
+  async executeRerollAsync(type = 'Manual', description = '') {
     // Try Supabase RPC first
     try {
       const dbType = type === 'Otomatis' ? 'automatic' : type === 'Inisialisasi' ? 'initial' : 'manual';
@@ -92,8 +93,8 @@ export const seatingService = {
       const { data, error } = await supabase.rpc('execute_seating_reroll', {
         p_roll_type: dbType,
         p_description: description || (type === 'Manual' ? 'Pengacakan Manual oleh Admin' : 'Pengacakan Otomatis Mingguan'),
-        p_admin_id: adminId,
-        p_session_token: token,
+        p_admin_id: null,       // Server authenticates via p_session_token; never trust browser-supplied UUID
+        p_session_token: token, // Server validates this against admin_sessions table
       });
 
       if (!error && data?.success) {

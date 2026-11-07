@@ -40,7 +40,7 @@ export default function AdminSidebar({
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <span className="font-bold text-lg text-content-primary">RuangKelas</span>
+              <span className="font-bold text-lg text-content-primary">Class Rolling</span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-[11px] font-semibold text-brand-600 uppercase tracking-wider">

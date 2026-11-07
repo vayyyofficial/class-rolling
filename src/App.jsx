@@ -143,11 +143,12 @@ export default function App() {
   };
 
   // Seating / Reroll Actions
+  // Note: Authorization is validated server-side via the session token stored in authService.
+  // Never pass currentUser?.id as a proof of admin authorization to the server.
   const handleExecuteReroll = async (type = 'Manual', description = '') => {
     const newArrangement = await seatingService.executeRerollAsync(
       type,
-      description,
-      currentUser?.id || null
+      description
     );
     setCurrentArrangement(newArrangement);
     setPreviousArrangement(seatingService.getPreviousArrangement());
@@ -170,7 +171,7 @@ export default function App() {
       <div className="min-h-screen bg-canvas flex items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin" />
-          <span className="text-xs font-semibold text-content-secondary">Memuat RuangKelas...</span>
+          <span className="text-xs font-semibold text-content-secondary">Memuat Class Rolling...</span>
         </div>
       </div>
     );

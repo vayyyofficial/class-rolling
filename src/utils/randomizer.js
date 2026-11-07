@@ -1,5 +1,5 @@
 /**
- * RUANGKELAS - Fisher-Yates Randomization Engine
+ * CLASS ROLLING - Fisher-Yates Randomization Engine
  * Unbiased seating shuffle and assignment algorithm
  */
 

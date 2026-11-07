@@ -645,3 +645,4 @@ REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres;
+

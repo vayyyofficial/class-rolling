@@ -1,5 +1,5 @@
 /**
- * RUANGKELAS - Default Classroom Layout Configuration
+ * CLASS ROLLING - Default Classroom Layout Configuration
  * 3 Blocks: Left (10 seats), Middle (10 seats), Right (8 seats)
  * Total: 28 positions. Exactly 2 positions empty at the back of right block.
  */

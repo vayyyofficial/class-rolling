@@ -1,5 +1,5 @@
 /**
- * RUANGKELAS - Initial Student Dataset
+ * CLASS ROLLING - Initial Student Dataset
  * Exact 26 registered students with full names and nicknames.
  */
 export const INITIAL_STUDENTS = [

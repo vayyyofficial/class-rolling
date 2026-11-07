@@ -76,7 +76,7 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
           </div>
           <h2 className="text-xl font-bold text-content-primary">Login Administrator</h2>
           <p className="text-xs text-content-secondary mt-1">
-            Masukkan kata sandi pengurus kelas untuk mengakses pengelolaan denah dan data siswa RuangKelas.
+            Masukkan kata sandi pengurus kelas untuk mengakses pengelolaan denah dan data siswa Class Rolling.
           </p>
         </div>
 
@@ -156,7 +156,7 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
 
       {/* Minimal Footer */}
       <div className="text-center text-xs text-content-secondary mt-6">
-        © {CURRENT_YEAR} RuangKelas. Hak cipta dilindungi.
+        © {CURRENT_YEAR} Class Rolling. Hak cipta dilindungi.
       </div>
     </div>
   );

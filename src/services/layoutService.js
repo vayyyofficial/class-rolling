@@ -88,27 +88,27 @@ export const layoutService = {
     storageService.set(STORAGE_KEY, layout);
 
     const token = authService.getSessionToken();
-    try {
-      if (token && layout.id) {
-        await supabase.rpc('admin_save_layout', {
+
+    // All writes must go through the authenticated admin_save_layout RPC.
+    // No direct unauthenticated fallback — the RPC validates the session server-side.
+    if (token && layout.id) {
+      try {
+        const { data, error } = await supabase.rpc('admin_save_layout', {
           p_session_token: token,
           p_layout_id: layout.id,
           p_name: layout.name,
           p_desk_position: layout.teacherDesk?.position || 'center',
           p_desk_label: layout.teacherDesk?.label || 'Meja Guru',
         });
-      } else if (layout.id) {
-        await supabase
-          .from('classroom_layouts')
-          .update({
-            name: layout.name,
-            teacher_desk_position: layout.teacherDesk?.position || 'center',
-            teacher_desk_label: layout.teacherDesk?.label || 'Meja Guru',
-          })
-          .eq('id', layout.id);
+
+        if (error) {
+          console.warn('[layoutService] admin_save_layout RPC error:', error.message);
+        } else if (!data?.success) {
+          console.warn('[layoutService] admin_save_layout rejected:', data?.error);
+        }
+      } catch (err) {
+        console.warn('[layoutService] admin_save_layout exception:', err);
       }
-    } catch (err) {
-      console.warn('[layoutService] Supabase layout save error:', err);
     }
 
     return true;

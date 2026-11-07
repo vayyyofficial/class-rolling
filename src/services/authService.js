@@ -1,13 +1,13 @@
 /**
- * RUANGKELAS - Password-Only Authentication Service
+ * CLASS ROLLING - Password-Only Authentication Service
  * Server-side verified authentication with rate limiting and brute force protection.
  *
  * Passwords are NEVER hardcoded, logged, or verified on the client.
  * All verification, bcrypt hashing, and session tokens are managed server-side.
  */
 
-import { supabase } from './supabase';
-import { storageService } from './storageService';
+import { supabase } from './supabase.js';
+import { storageService } from './storageService.js';
 
 const SESSION_KEY = 'admin_session';
 

@@ -1,5 +1,5 @@
 /**
- * RUANGKELAS - Scheduler Utility
+ * CLASS ROLLING - Scheduler Utility
  * Handles Sunday 06:00 WIB weekly reroll calculation, countdown, and week identifiers.
  */
 
