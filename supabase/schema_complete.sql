@@ -207,45 +207,110 @@ CREATE INDEX IF NOT EXISTS idx_reroll_history_created ON public.reroll_history(c
 CREATE INDEX IF NOT EXISTS idx_saved_class_groups_created ON public.saved_class_groups(created_at DESC);
 
 -- ====================================================================
--- 4. CLEAN OBSOLETE OVERLOADS (NO CASCADE)
+-- 4. SAFE MANAGEMENT OF LEGACY OVERLOADS & FUNCTIONS (NO DEPENDENCY ERRORS)
 -- ====================================================================
-DROP FUNCTION IF EXISTS public.execute_seating_reroll(TEXT, TEXT, UUID);
-DROP FUNCTION IF EXISTS public.is_admin();
-DROP FUNCTION IF EXISTS public.is_owner();
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN (
+        SELECT p.oid::regprocedure AS func_signature
+        FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'public'
+          AND p.proname = 'execute_seating_reroll'
+          AND p.oid::regprocedure::text != 'public.execute_seating_reroll(text,text,uuid,text)'::regprocedure::text
+    ) LOOP
+        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_signature || ';';
+    END LOOP;
+END $$;
+
+CREATE OR REPLACE FUNCTION public.is_owner()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+BEGIN
+    RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.is_owner() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_owner() FROM anon;
+REVOKE ALL ON FUNCTION public.is_owner() FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.is_owner() TO postgres, service_role;
+
+CREATE OR REPLACE FUNCTION public.is_admin()
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+BEGIN
+    RETURN false;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.is_admin() FROM anon;
+REVOKE ALL ON FUNCTION public.is_admin() FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.is_admin() TO postgres, service_role;
 
 -- ====================================================================
 -- 5. INTERNAL HELPER FUNCTIONS
 -- ====================================================================
-CREATE OR REPLACE FUNCTION public.is_valid_admin_session(p_token TEXT)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-STABLE
-AS $$
+DO $$
+DECLARE
+    v_ext_schema TEXT;
+    v_sql TEXT;
 BEGIN
-    IF p_token IS NULL OR length(p_token) < 32 THEN
-        RETURN false;
+    SELECT n.nspname INTO v_ext_schema
+    FROM pg_extension e
+    JOIN pg_namespace n ON e.extnamespace = n.oid
+    WHERE e.extname = 'pgcrypto';
+
+    IF v_ext_schema IS NULL THEN
+        v_ext_schema := 'public';
     END IF;
 
-    RETURN EXISTS (
-        SELECT 1 FROM public.admin_sessions
-        WHERE session_token_hash = encode(digest(p_token::bytea, 'sha256'), 'hex')
-          AND expires_at > now()
-    );
-END;
-$$;
+    v_sql := format($func$
+        CREATE OR REPLACE FUNCTION public.is_valid_admin_session(p_token TEXT)
+        RETURNS BOOLEAN
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = public, %1$I
+        STABLE
+        AS $body$
+        BEGIN
+            IF p_token IS NULL OR length(p_token) < 32 THEN
+                RETURN false;
+            END IF;
+
+            RETURN EXISTS (
+                SELECT 1 FROM public.admin_sessions
+                WHERE session_token_hash = encode(%1$I.digest(p_token::bytea, 'sha256'), 'hex')
+                  AND expires_at > now()
+            );
+        END;
+        $body$;
+    $func$, v_ext_schema);
+
+    EXECUTE v_sql;
+END $$;
 
 REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.is_valid_admin_session(TEXT) TO postgres, service_role;
 
-CREATE OR REPLACE FUNCTION public.is_admin(p_token TEXT DEFAULT NULL)
+CREATE OR REPLACE FUNCTION public.is_admin(p_token TEXT)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions
+SET search_path = public
 STABLE
 AS $$
 BEGIN
@@ -944,7 +1009,7 @@ REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authent
 GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres, service_role;
 
 -- ====================================================================
--- 12. DYNAMIC PG_POLICIES AUDIT & CLEANUP
+-- 12. DYNAMIC PG_POLICIES AUDIT & CLEANUP (INCLUDES saved_class_groups)
 -- ====================================================================
 DO $$
 DECLARE
@@ -969,7 +1034,8 @@ BEGIN
               'admin_audit_logs',
               'audit_logs',
               'group_generations',
-              'group_generation_members'
+              'group_generation_members',
+              'saved_class_groups'
           )
           AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
     ) LOOP
@@ -1000,7 +1066,8 @@ BEGIN
               'admin_audit_logs',
               'audit_logs',
               'group_generations',
-              'group_generation_members'
+              'group_generation_members',
+              'saved_class_groups'
           )
           AND cmd = 'SELECT'
     ) LOOP
@@ -1008,34 +1075,25 @@ BEGIN
     END LOOP;
 END $$;
 
-DROP POLICY IF EXISTS "Public can view saved class groups" ON public.saved_class_groups;
-DROP POLICY IF EXISTS "Public can insert saved class groups" ON public.saved_class_groups;
-DROP POLICY IF EXISTS "Public can delete saved class groups" ON public.saved_class_groups;
-
 -- ====================================================================
--- 13. ENABLE ROW LEVEL SECURITY ON ALL TABLES
+-- 13. ENABLE ROW LEVEL SECURITY SAFELY VIA CATALOG VERIFICATION
 -- ====================================================================
-ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.classroom_layouts ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.seats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.seating_periods ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.seating_assignments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.reroll_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_invitations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_security ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.admin_audit_logs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.app_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.group_generations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.group_generation_members ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.saved_class_groups ENABLE ROW LEVEL SECURITY;
-
 DO $$
+DECLARE
+    t TEXT;
+    all_target_tables TEXT[] := ARRAY[
+        'students', 'classroom_layouts', 'seats', 'seating_periods',
+        'seating_assignments', 'reroll_history', 'admin_security',
+        'admin_sessions', 'admin_audit_logs', 'saved_class_groups',
+        'app_settings', 'admin_profiles', 'admin_invitations',
+        'audit_logs', 'group_generations', 'group_generation_members'
+    ];
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'audit_logs') THEN
-        ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
-    END IF;
+    FOREACH t IN ARRAY all_target_tables LOOP
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
+            EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', t);
+        END IF;
+    END LOOP;
 END $$;
 
 CREATE POLICY "Public can read students" ON public.students FOR SELECT USING (true);
@@ -1044,49 +1102,59 @@ CREATE POLICY "Public can read seats" ON public.seats FOR SELECT USING (true);
 CREATE POLICY "Public can read seating periods" ON public.seating_periods FOR SELECT USING (true);
 CREATE POLICY "Public can read seating assignments" ON public.seating_assignments FOR SELECT USING (true);
 CREATE POLICY "Public can read reroll history" ON public.reroll_history FOR SELECT USING (true);
-CREATE POLICY "Public can read app settings" ON public.app_settings FOR SELECT USING (true);
-CREATE POLICY "Public can read group generations" ON public.group_generations FOR SELECT USING (true);
-CREATE POLICY "Public can read group members" ON public.group_generation_members FOR SELECT USING (true);
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'app_settings') THEN
+        CREATE POLICY "Public can read app settings" ON public.app_settings FOR SELECT USING (true);
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'group_generations') THEN
+        CREATE POLICY "Public can read group generations" ON public.group_generations FOR SELECT USING (true);
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'group_generation_members') THEN
+        CREATE POLICY "Public can read group members" ON public.group_generation_members FOR SELECT USING (true);
+    END IF;
+END $$;
 
 CREATE POLICY "Public can view saved class groups" ON public.saved_class_groups FOR SELECT USING (true);
 CREATE POLICY "Public can insert saved class groups" ON public.saved_class_groups FOR INSERT WITH CHECK (true);
 CREATE POLICY "Public can delete saved class groups" ON public.saved_class_groups FOR DELETE USING (true);
 
 -- ====================================================================
--- 14. TABLE PRIVILEGE HARDENING
+-- 14. TABLE PRIVILEGE HARDENING (GRANT / REVOKE)
 -- ====================================================================
-REVOKE INSERT, UPDATE, DELETE ON public.students FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.classroom_layouts FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.seats FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.seating_periods FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.seating_assignments FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.reroll_history FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.app_settings FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.group_generations FROM anon, authenticated;
-REVOKE INSERT, UPDATE, DELETE ON public.group_generation_members FROM anon, authenticated;
-
-GRANT SELECT ON public.students TO anon, authenticated;
-GRANT SELECT ON public.classroom_layouts TO anon, authenticated;
-GRANT SELECT ON public.seats TO anon, authenticated;
-GRANT SELECT ON public.seating_periods TO anon, authenticated;
-GRANT SELECT ON public.seating_assignments TO anon, authenticated;
-GRANT SELECT ON public.reroll_history TO anon, authenticated;
-GRANT SELECT ON public.app_settings TO anon, authenticated;
-GRANT SELECT ON public.group_generations TO anon, authenticated;
-GRANT SELECT ON public.group_generation_members TO anon, authenticated;
-
-GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated;
-
-REVOKE ALL ON public.admin_security FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON public.admin_sessions FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON public.admin_audit_logs FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON public.admin_profiles FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON public.admin_invitations FROM PUBLIC, anon, authenticated;
-
 DO $$
+DECLARE
+    t TEXT;
+    read_only_tables TEXT[] := ARRAY[
+        'students', 'classroom_layouts', 'seats', 'seating_periods',
+        'seating_assignments', 'reroll_history', 'app_settings',
+        'group_generations', 'group_generation_members'
+    ];
+    strict_lockdown_tables TEXT[] := ARRAY[
+        'admin_security', 'admin_sessions', 'admin_audit_logs',
+        'admin_profiles', 'admin_invitations', 'audit_logs'
+    ];
 BEGIN
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'audit_logs') THEN
-        REVOKE ALL ON public.audit_logs FROM PUBLIC, anon, authenticated;
+    FOREACH t IN ARRAY read_only_tables LOOP
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
+            EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON public.%I FROM anon, authenticated;', t);
+            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC;', t);
+            EXECUTE format('GRANT SELECT ON public.%I TO anon, authenticated, postgres, service_role;', t);
+        END IF;
+    END LOOP;
+
+    FOREACH t IN ARRAY strict_lockdown_tables LOOP
+        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
+            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC, anon, authenticated;', t);
+            EXECUTE format('GRANT ALL ON public.%I TO postgres, service_role;', t);
+        END IF;
+    END LOOP;
+
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'saved_class_groups') THEN
+        EXECUTE 'REVOKE UPDATE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;';
+        EXECUTE 'REVOKE ALL ON public.saved_class_groups FROM PUBLIC;';
+        EXECUTE 'GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated, postgres, service_role;';
     END IF;
 END $$;
 
@@ -1096,22 +1164,40 @@ END $$;
 DO $$
 DECLARE
     v_ext_schema TEXT;
+    func_record RECORD;
 BEGIN
     SELECT n.nspname INTO v_ext_schema
     FROM pg_extension e
     JOIN pg_namespace n ON e.extnamespace = n.oid
     WHERE e.extname = 'pgcrypto';
 
-    IF v_ext_schema IS NOT NULL THEN
-        EXECUTE format('ALTER FUNCTION public.is_valid_admin_session(TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.admin_verify_password(TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.admin_verify_session(TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.admin_logout(TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.server_provision_admin_password(TEXT) SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.cron_execute_weekly_reroll() SET search_path = public, %I', v_ext_schema);
-        EXECUTE format('ALTER FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) SET search_path = public, %I', v_ext_schema);
+    IF v_ext_schema IS NULL THEN
+        v_ext_schema := 'public';
     END IF;
+
+    FOR func_record IN (
+        SELECT p.oid::regprocedure AS signature
+        FROM pg_proc p
+        JOIN pg_namespace n ON p.pronamespace = n.oid
+        WHERE n.nspname = 'public'
+          AND p.proname IN (
+              'is_valid_admin_session',
+              'is_admin',
+              'is_owner',
+              'cron_execute_weekly_reroll',
+              'execute_seating_reroll',
+              'get_active_seating',
+              'admin_manage_student',
+              'admin_save_layout',
+              'admin_verify_password',
+              'admin_verify_session',
+              'admin_change_password',
+              'admin_logout',
+              'server_provision_admin_password'
+          )
+    ) LOOP
+        EXECUTE format('ALTER FUNCTION %s SET search_path = public, %I;', func_record.signature, v_ext_schema);
+    END LOOP;
 END $$;
 
 -- ====================================================================
@@ -1209,17 +1295,38 @@ END $$;
 -- 18. CRON SCHEDULER REGISTRATION
 -- ====================================================================
 DO $$
+DECLARE
+    v_jobid BIGINT;
 BEGIN
-    PERFORM cron.unschedule('classrolling-weekly-reroll');
-EXCEPTION WHEN OTHERS THEN END $$;
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+        BEGIN
+            PERFORM cron.unschedule('classrolling-weekly-reroll');
+        EXCEPTION WHEN OTHERS THEN END;
+
+        BEGIN
+            PERFORM cron.unschedule('seatflow-weekly-reroll');
+        EXCEPTION WHEN OTHERS THEN END;
+
+        BEGIN
+            FOR v_jobid IN (
+                SELECT jobid FROM cron.job 
+                WHERE jobname IN ('classrolling-weekly-reroll', 'seatflow-weekly-reroll')
+            ) LOOP
+                PERFORM cron.unschedule(v_jobid);
+            END LOOP;
+        EXCEPTION WHEN OTHERS THEN END;
+    END IF;
+END $$;
 
 DO $$
 BEGIN
-    PERFORM cron.unschedule('seatflow-weekly-reroll');
-EXCEPTION WHEN OTHERS THEN END $$;
-
-SELECT cron.schedule(
-    'classrolling-weekly-reroll',
-    '0 23 * * 6', -- 23:00 UTC Saturday = 06:00 WIB Sunday
-    $$SELECT public.cron_execute_weekly_reroll();$$
-);
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+        PERFORM cron.schedule(
+            'classrolling-weekly-reroll',
+            '0 23 * * 6', -- 23:00 UTC Saturday = 06:00 WIB Sunday
+            'SELECT public.cron_execute_weekly_reroll();'
+        );
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pg_cron schedule could not be registered automatically: %', SQLERRM;
+END $$;
