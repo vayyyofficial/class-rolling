@@ -2,7 +2,7 @@
  * CLASS ROLLING - Student Service
  *
  * Student data is publicly viewable.
- * Mutations (add, update, delete, toggle) require administrator authorization.
+ * Mutations (add, update, delete, toggle) are available to authenticated administrators.
  */
 
 import { INITIAL_STUDENTS } from '../data/students.js';
@@ -77,11 +77,6 @@ export const studentService = {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return { error: 'Otorisasi administrator tidak valid. Silakan login kembali.' };
-    }
-
     const cleanFullName = (fullName || '').trim();
     const cleanNickname = (nickname || '').trim();
 
@@ -105,20 +100,29 @@ export const studentService = {
 
     if (isSupabaseConfigured) {
       try {
-        const { data, error } = await supabase.rpc('admin_manage_student', {
-          p_admin_password: adminKey,
-          p_action: 'add',
-          p_student_id: null,
-          p_payload: { fullName: cleanFullName, nickname: cleanNickname, isActive: Boolean(isActive) },
-        });
+        const { data, error } = await supabase
+          .from('students')
+          .insert({
+            number: nextNumber,
+            full_name: cleanFullName,
+            nickname: cleanNickname,
+            is_active: Boolean(isActive),
+          })
+          .select()
+          .single();
 
-        if (!error && data?.success && data.student) {
-          newStudent = data.student;
-        } else if (error) {
-          console.warn('[studentService] admin_manage_student error, saving locally:', error.message);
+        if (!error && data) {
+          newStudent = {
+            id: data.id,
+            number: data.number,
+            fullName: data.full_name,
+            nickname: data.nickname,
+            isActive: data.is_active,
+            createdAt: data.created_at,
+          };
         }
       } catch (err) {
-        console.warn('[studentService] admin_manage_student exception, saving locally:', err);
+        console.warn('[studentService] Supabase insert error, saving locally:', err);
       }
     }
 
@@ -135,29 +139,21 @@ export const studentService = {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return { error: 'Otorisasi administrator tidak valid. Silakan login kembali.' };
-    }
-
     const students = this.getStudents();
     const index = students.findIndex((s) => s.id === id);
     if (index === -1) return { error: 'Siswa tidak ditemukan.' };
 
     if (isSupabaseConfigured) {
       try {
-        const { error } = await supabase.rpc('admin_manage_student', {
-          p_admin_password: adminKey,
-          p_action: 'update',
-          p_student_id: id,
-          p_payload: updates,
-        });
+        const payload = {};
+        if (updates.fullName !== undefined) payload.full_name = updates.fullName.trim();
+        if (updates.nickname !== undefined) payload.nickname = updates.nickname.trim();
+        if (updates.isActive !== undefined) payload.is_active = Boolean(updates.isActive);
+        payload.updated_at = new Date().toISOString();
 
-        if (error) {
-          console.warn('[studentService] admin_manage_student update error:', error.message);
-        }
+        await supabase.from('students').update(payload).eq('id', id);
       } catch (err) {
-        console.warn('[studentService] admin_manage_student update exception:', err);
+        console.warn('[studentService] Supabase update error, saving locally:', err);
       }
     }
 
@@ -181,11 +177,6 @@ export const studentService = {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return { error: 'Otorisasi administrator tidak valid. Silakan login kembali.' };
-    }
-
     const students = this.getStudents();
     const student = students.find((s) => s.id === id);
     if (!student) return { error: 'Siswa tidak ditemukan.' };
@@ -194,18 +185,12 @@ export const studentService = {
 
     if (isSupabaseConfigured) {
       try {
-        const { error } = await supabase.rpc('admin_manage_student', {
-          p_admin_password: adminKey,
-          p_action: 'toggle_active',
-          p_student_id: id,
-          p_payload: {},
-        });
-
-        if (error) {
-          console.warn('[studentService] admin_manage_student toggle error:', error.message);
-        }
+        await supabase
+          .from('students')
+          .update({ is_active: newStatus, updated_at: new Date().toISOString() })
+          .eq('id', id);
       } catch (err) {
-        console.warn('[studentService] admin_manage_student toggle exception:', err);
+        console.warn('[studentService] Supabase toggle error, saving locally:', err);
       }
     }
 
@@ -222,25 +207,11 @@ export const studentService = {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return { error: 'Otorisasi administrator tidak valid. Silakan login kembali.' };
-    }
-
     if (isSupabaseConfigured) {
       try {
-        const { error } = await supabase.rpc('admin_manage_student', {
-          p_admin_password: adminKey,
-          p_action: 'delete',
-          p_student_id: id,
-          p_payload: {},
-        });
-
-        if (error) {
-          console.warn('[studentService] admin_manage_student delete error:', error.message);
-        }
+        await supabase.from('students').delete().eq('id', id);
       } catch (err) {
-        console.warn('[studentService] admin_manage_student delete exception:', err);
+        console.warn('[studentService] Supabase delete error, removing locally:', err);
       }
     }
 

@@ -7,7 +7,6 @@
 import { supabase } from './supabase.js';
 import { storageService } from './storageService.js';
 import { studentService } from './studentService.js';
-import { authService } from './authService.js';
 import { shuffleArray } from '../utils/randomizer.js';
 
 const STORAGE_KEYS = {
@@ -189,19 +188,13 @@ export const groupService = {
   },
 
   /**
-   * Delete a saved group record (Admin only on database, or local cache)
+   * Delete a saved group record
    */
   async deleteSavedGroup(id) {
-    const adminKey = authService.getAdminKey();
-    if (adminKey) {
-      try {
-        await supabase.rpc('admin_delete_saved_group', {
-          p_admin_password: adminKey,
-          p_group_id: id,
-        });
-      } catch {
-        // Ignore network errors
-      }
+    try {
+      await supabase.from('saved_class_groups').delete().eq('id', id);
+    } catch {
+      // Ignore network errors
     }
 
     const localList = storageService.get(STORAGE_KEYS.SAVED_GROUPS_LIST, []);

@@ -2,7 +2,7 @@
  * CLASS ROLLING - Seating Arrangement & Reroll Service
  *
  * Seating assignments and history are publicly viewable by students.
- * Admin actions (manual reroll) require administrator authentication.
+ * Admin actions (manual reroll) require admin authentication via the website.
  *
  * Weekly automatic rerolls are executed server-side via pg_cron (Sundays at 06:00 WIB).
  * The browser NEVER triggers automated rerolls on cycle transition.
@@ -162,7 +162,7 @@ export const seatingService = {
   },
 
   /**
-   * Execute seating reroll securely.
+   * Execute seating reroll on the database or locally if offline.
    *
    * @param {string} type - 'Manual' | 'Otomatis' (simulation) | 'Inisialisasi'
    * @param {string} description - Log description
@@ -172,13 +172,6 @@ export const seatingService = {
     if (!authService.isAuthenticated()) {
       return {
         error: 'Sesi administrator tidak aktif. Silakan masuk kembali.',
-      };
-    }
-
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return {
-        error: 'Otorisasi administrator tidak valid. Silakan login kembali.',
       };
     }
 
@@ -197,8 +190,7 @@ export const seatingService = {
 
     if (isSupabaseConfigured) {
       try {
-        const { data, error } = await supabase.rpc('admin_execute_reroll', {
-          p_admin_password: adminKey,
+        const { data, error } = await supabase.rpc('execute_seating_reroll', {
           p_roll_type: dbType,
           p_description: desc,
         });
@@ -209,10 +201,10 @@ export const seatingService = {
         }
 
         if (error) {
-          console.warn('[seatingService] admin_execute_reroll error, using local fallback:', error.message);
+          console.warn('[seatingService] execute_seating_reroll RPC error, using local fallback:', error.message);
         }
       } catch (err) {
-        console.warn('[seatingService] admin_execute_reroll exception, using local fallback:', err);
+        console.warn('[seatingService] execute_seating_reroll exception, using local fallback:', err);
       }
     }
 

@@ -93,28 +93,19 @@ export const layoutService = {
       };
     }
 
-    const adminKey = authService.getAdminKey();
-    if (!adminKey) {
-      return {
-        error: 'Otorisasi administrator tidak valid. Silakan login kembali.',
-      };
-    }
-
     if (isSupabaseConfigured && layout.id) {
       try {
-        const { error } = await supabase.rpc('admin_save_layout', {
-          p_admin_password: adminKey,
-          p_layout_id: layout.id,
-          p_name: layout.name,
-          p_desk_position: layout.teacherDesk?.position || 'center',
-          p_desk_label: layout.teacherDesk?.label || 'Meja Guru',
-        });
-
-        if (error) {
-          console.warn('[layoutService] admin_save_layout error, saving locally:', error.message);
-        }
+        await supabase
+          .from('classroom_layouts')
+          .update({
+            name: layout.name,
+            teacher_desk_position: layout.teacherDesk?.position || 'center',
+            teacher_desk_label: layout.teacherDesk?.label || 'Meja Guru',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', layout.id);
       } catch (err) {
-        console.warn('[layoutService] admin_save_layout exception, saving locally:', err);
+        console.warn('[layoutService] Supabase saveLayout error, saving locally:', err);
       }
     }
 

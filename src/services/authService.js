@@ -22,7 +22,6 @@ export const authService = {
       const session = {
         role: 'ADMIN',
         name: 'Administrator Kelas',
-        key: ADMIN_PASSWORD,
         loginTime: new Date().toISOString(),
       };
       storageService.set(SESSION_KEY, session);
@@ -50,19 +49,11 @@ export const authService = {
   },
 
   /**
-   * Retrieve active admin key for authenticated database RPCs.
-   */
-  getAdminKey() {
-    const session = this.getSession();
-    return session?.key === ADMIN_PASSWORD ? ADMIN_PASSWORD : null;
-  },
-
-  /**
    * Check if user is currently authenticated.
    */
   isAuthenticated() {
     const session = this.getSession();
-    return Boolean(session && session.role === 'ADMIN' && session.key === ADMIN_PASSWORD);
+    return Boolean(session && session.role === 'ADMIN');
   },
 
   /**
@@ -70,7 +61,7 @@ export const authService = {
    */
   getCurrentUser() {
     const session = this.getSession();
-    return session && session.role === 'ADMIN'
+    return session
       ? {
           name: session.name || 'Administrator Kelas',
           role: session.role || 'ADMIN',
