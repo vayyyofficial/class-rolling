@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 import { groupService } from '../../services/groupService';
+import { authService } from '../../services/authService';
 import Badge from '../common/Badge';
 import Modal from '../common/Modal';
 import {
@@ -208,6 +209,10 @@ export default function GroupRandomizerView({ students = [], showNotification })
 
   // Delete saved group record
   const handleDeleteSaved = async (id, title) => {
+    if (!authService.isAuthenticated()) {
+      showNotification('Hanya administrator yang dapat menghapus catatan kelompok dari database.', 'error');
+      return;
+    }
     if (window.confirm(`Hapus catatan kelompok untuk "${title}"?`)) {
       await groupService.deleteSavedGroup(id);
       const updated = await groupService.fetchSavedGroups();

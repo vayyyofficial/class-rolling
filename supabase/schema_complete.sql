@@ -9,6 +9,12 @@
 --   5. Group Randomizer Saved History (saved_class_groups)
 --   6. Automatic Weekly Seating Rotation (pg_cron at Sunday 06:00 WIB)
 --   7. Realtime Synchronization
+--   8. Hardened Security Architecture:
+--      - Fixed Password Admin Authentication ('kajenter35_2026')
+--      - Anonymous visitors receive SELECT-only access on administrative tables
+--      - Public Randomizer allows SELECT and INSERT, prohibits UPDATE and DELETE
+--      - Manual rerolls NEVER collide with or skip Sunday 06:00 WIB weekly cron
+--      - Direct table mutations and execute_seating_reroll revoked from anon
 -- ====================================================================
 
 -- 1. EXTENSIONS
@@ -107,123 +113,11 @@ CREATE INDEX IF NOT EXISTS idx_seating_assignments_period ON public.seating_assi
 CREATE INDEX IF NOT EXISTS idx_reroll_history_created ON public.reroll_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_saved_class_groups_created ON public.saved_class_groups(created_at DESC);
 
+-- ====================================================================
 -- 4. DATABASE FUNCTIONS
--- A. cron_execute_weekly_reroll (Used exclusively by pg_cron Sunday 06:00 WIB)
-CREATE OR REPLACE FUNCTION public.cron_execute_weekly_reroll()
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-    v_layout_id UUID;
-    v_cycle_id TEXT;
-    v_period_id UUID;
-    v_student_count INT;
-    v_seat_count INT;
-    v_now TIMESTAMPTZ := now();
-    v_wib_now TIMESTAMPTZ;
-    v_wib_dow INT;
-    v_days_back INT;
-    v_cycle_start DATE;
-    v_existing_period_id UUID;
-BEGIN
-    PERFORM pg_advisory_xact_lock(hashtext('cron_execute_weekly_reroll'));
+-- ====================================================
 
-    v_wib_now := v_now AT TIME ZONE 'Asia/Jakarta';
-    v_wib_dow := EXTRACT(DOW FROM v_wib_now)::INT;
-
-    IF v_wib_dow = 0 AND EXTRACT(HOUR FROM v_wib_now) < 6 THEN
-        v_days_back := 7;
-    ELSE
-        v_days_back := v_wib_dow;
-    END IF;
-
-    v_cycle_start := v_wib_now::DATE - v_days_back;
-    v_cycle_id := 'CYCLE-' || to_char(v_cycle_start, 'YYYY-MM-DD');
-
-    SELECT id INTO v_existing_period_id
-    FROM public.seating_periods
-    WHERE cycle_id = v_cycle_id;
-
-    IF v_existing_period_id IS NOT NULL THEN
-        RETURN jsonb_build_object(
-            'success', true,
-            'skipped', true,
-            'reason', 'Rotasi untuk siklus ini sudah ada.',
-            'cycle_id', v_cycle_id,
-            'existing_period_id', v_existing_period_id
-        );
-    END IF;
-
-    SELECT id INTO v_layout_id FROM public.classroom_layouts WHERE is_active = true LIMIT 1;
-    IF v_layout_id IS NULL THEN
-        RAISE EXCEPTION 'Tata letak kelas aktif tidak ditemukan.';
-    END IF;
-
-    SELECT COUNT(*) INTO v_student_count FROM public.students WHERE is_active = true;
-    IF v_student_count = 0 THEN
-        RAISE EXCEPTION 'Tidak ada siswa aktif untuk diacak.';
-    END IF;
-
-    SELECT COUNT(*) INTO v_seat_count FROM public.seats
-    WHERE layout_id = v_layout_id AND is_available = true;
-
-    IF v_seat_count < v_student_count THEN
-        RAISE EXCEPTION 'Kapasitas kursi tersedia (%) kurang dari jumlah siswa aktif (%).',
-            v_seat_count, v_student_count;
-    END IF;
-
-    UPDATE public.seating_periods SET status = 'archived' WHERE status = 'active';
-
-    INSERT INTO public.seating_periods (cycle_id, layout_id, status, roll_type)
-    VALUES (v_cycle_id, v_layout_id, 'active', 'automatic')
-    RETURNING id INTO v_period_id;
-
-    DELETE FROM public.seating_assignments WHERE period_id = v_period_id;
-
-    WITH shuffled_students AS (
-        SELECT id, ROW_NUMBER() OVER (ORDER BY gen_random_uuid()) AS rn
-        FROM public.students
-        WHERE is_active = true
-    ),
-    prioritized_seats AS (
-        SELECT id,
-               ROW_NUMBER() OVER (
-                   ORDER BY (CASE WHEN default_empty THEN 1 ELSE 0 END), gen_random_uuid()
-               ) AS rn
-        FROM public.seats
-        WHERE layout_id = v_layout_id AND is_available = true
-    )
-    INSERT INTO public.seating_assignments (period_id, seat_id, student_id)
-    SELECT v_period_id, s.id, stu.id
-    FROM shuffled_students stu
-    JOIN prioritized_seats s ON stu.rn = s.rn;
-
-    INSERT INTO public.reroll_history (
-        period_id, roll_type, description, active_student_count, performed_by, cycle_id
-    ) VALUES (
-        v_period_id,
-        'automatic',
-        'Rotasi Otomatis Mingguan (Minggu 06:00 WIB)',
-        v_student_count,
-        NULL,
-        v_cycle_id
-    );
-
-    RETURN jsonb_build_object(
-        'success', true,
-        'skipped', false,
-        'period_id', v_period_id,
-        'cycle_id', v_cycle_id,
-        'student_count', v_student_count,
-        'roll_type', 'automatic',
-        'created_at', v_now
-    );
-END;
-$$;
-
--- B. execute_seating_reroll (Called from Admin Dashboard for manual or simulated rerolls)
+-- A. Core Seating Engine (Internal Only - revoked from anon)
 CREATE OR REPLACE FUNCTION public.execute_seating_reroll(
     p_roll_type TEXT DEFAULT 'manual',
     p_description TEXT DEFAULT 'Pengacakan Tempat Duduk'
@@ -254,6 +148,7 @@ BEGIN
     v_wib_now := v_now AT TIME ZONE 'Asia/Jakarta';
     v_wib_dow := EXTRACT(DOW FROM v_wib_now)::INT;
 
+    -- Sunday before 06:00 WIB belongs to previous cycle
     IF v_wib_dow = 0 AND EXTRACT(HOUR FROM v_wib_now) < 6 THEN
         v_days_back := 7;
     ELSE
@@ -263,6 +158,7 @@ BEGIN
     v_cycle_start := v_wib_now::DATE - v_days_back;
     v_cycle_id := 'CYCLE-' || to_char(v_cycle_start, 'YYYY-MM-DD');
 
+    -- Manual rerolls use timestamped cycle IDs so they NEVER collide with weekly cycle ID
     IF v_roll_type = 'manual' THEN
         v_cycle_id := v_cycle_id || '-M' || to_char(v_now, 'HH24MISS') || '-' || floor(random() * 1000)::TEXT;
     ELSIF v_roll_type = 'automatic' THEN
@@ -339,7 +235,125 @@ BEGIN
 END;
 $$;
 
--- C. get_active_seating (Public read for active seating map)
+-- B. Scheduled Weekly Rotation (Sunday 06:00 WIB / Saturday 23:00 UTC)
+CREATE OR REPLACE FUNCTION public.cron_execute_weekly_reroll()
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_layout_id UUID;
+    v_cycle_id TEXT;
+    v_period_id UUID;
+    v_student_count INT;
+    v_seat_count INT;
+    v_now TIMESTAMPTZ := now();
+    v_wib_now TIMESTAMPTZ;
+    v_wib_dow INT;
+    v_days_back INT;
+    v_cycle_start DATE;
+    v_existing_period_id UUID;
+BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('cron_execute_weekly_reroll'));
+
+    v_wib_now := v_now AT TIME ZONE 'Asia/Jakarta';
+    v_wib_dow := EXTRACT(DOW FROM v_wib_now)::INT;
+
+    IF v_wib_dow = 0 AND EXTRACT(HOUR FROM v_wib_now) < 6 THEN
+        v_days_back := 7;
+    ELSE
+        v_days_back := v_wib_dow;
+    END IF;
+
+    v_cycle_start := v_wib_now::DATE - v_days_back;
+    v_cycle_id := 'CYCLE-' || to_char(v_cycle_start, 'YYYY-MM-DD');
+
+    -- ONLY checks if an AUTOMATIC rotation has already completed for this exact week.
+    -- Manual rerolls have roll_type = 'manual' and will NEVER skip this weekly cron.
+    SELECT id INTO v_existing_period_id
+    FROM public.seating_periods
+    WHERE cycle_id = v_cycle_id
+      AND roll_type = 'automatic';
+
+    IF v_existing_period_id IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'skipped', true,
+            'reason', 'Rotasi otomatis mingguan untuk siklus ini sudah pernah dijalankan.',
+            'cycle_id', v_cycle_id,
+            'existing_period_id', v_existing_period_id
+        );
+    END IF;
+
+    SELECT id INTO v_layout_id FROM public.classroom_layouts WHERE is_active = true LIMIT 1;
+    IF v_layout_id IS NULL THEN
+        RAISE EXCEPTION 'Tata letak kelas aktif tidak ditemukan.';
+    END IF;
+
+    SELECT COUNT(*) INTO v_student_count FROM public.students WHERE is_active = true;
+    IF v_student_count = 0 THEN
+        RAISE EXCEPTION 'Tidak ada siswa aktif untuk diacak.';
+    END IF;
+
+    SELECT COUNT(*) INTO v_seat_count FROM public.seats
+    WHERE layout_id = v_layout_id AND is_available = true;
+
+    IF v_seat_count < v_student_count THEN
+        RAISE EXCEPTION 'Kapasitas kursi tersedia (%) kurang dari jumlah siswa aktif (%).',
+            v_seat_count, v_student_count;
+    END IF;
+
+    UPDATE public.seating_periods SET status = 'archived' WHERE status = 'active';
+
+    INSERT INTO public.seating_periods (cycle_id, layout_id, status, roll_type)
+    VALUES (v_cycle_id, v_layout_id, 'active', 'automatic')
+    RETURNING id INTO v_period_id;
+
+    DELETE FROM public.seating_assignments WHERE period_id = v_period_id;
+
+    WITH shuffled_students AS (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY gen_random_uuid()) AS rn
+        FROM public.students
+        WHERE is_active = true
+    ),
+    prioritized_seats AS (
+        SELECT id,
+               ROW_NUMBER() OVER (
+                   ORDER BY (CASE WHEN default_empty THEN 1 ELSE 0 END), gen_random_uuid()
+               ) AS rn
+        FROM public.seats
+        WHERE layout_id = v_layout_id AND is_available = true
+    )
+    INSERT INTO public.seating_assignments (period_id, seat_id, student_id)
+    SELECT v_period_id, s.id, stu.id
+    FROM shuffled_students stu
+    JOIN prioritized_seats s ON stu.rn = s.rn;
+
+    INSERT INTO public.reroll_history (
+        period_id, roll_type, description, active_student_count, performed_by, cycle_id
+    ) VALUES (
+        v_period_id,
+        'automatic',
+        'Rotasi Otomatis Mingguan (Minggu 06:00 WIB)',
+        v_student_count,
+        NULL,
+        v_cycle_id
+    );
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'skipped', false,
+        'period_id', v_period_id,
+        'cycle_id', v_cycle_id,
+        'student_count', v_student_count,
+        'roll_type', 'automatic',
+        'created_at', v_now
+    );
+END;
+$$;
+
+-- C. Public Read-Only RPC: Get Active Seating
 CREATE OR REPLACE FUNCTION public.get_active_seating()
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -380,7 +394,7 @@ BEGIN
     RETURN jsonb_build_object(
         'active', true,
         'period_id', v_period.id,
-        'cycle_id', v_cycle_id,
+        'cycle_id', v_period.cycle_id,
         'roll_type', v_period.roll_type,
         'created_at', v_period.created_at,
         'assignments', v_assignments,
@@ -389,14 +403,226 @@ BEGIN
 END;
 $$;
 
--- 5. FUNCTION GRANTS
+-- D. Secure Server-Side Admin RPCs (Guarded by 'kajenter35_2026')
+-- 1. Admin Execute Reroll
+CREATE OR REPLACE FUNCTION public.admin_execute_reroll(
+    p_admin_password TEXT,
+    p_roll_type TEXT DEFAULT 'manual',
+    p_description TEXT DEFAULT 'Pengacakan Tempat Duduk'
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_admin_password IS NULL OR p_admin_password != 'kajenter35_2026' THEN
+        RAISE EXCEPTION 'Akses ditolak: Kata sandi administrator salah.';
+    END IF;
+
+    RETURN public.execute_seating_reroll(p_roll_type, p_description);
+END;
+$$;
+
+-- 2. Admin Manage Student
+CREATE OR REPLACE FUNCTION public.admin_manage_student(
+    p_admin_password TEXT,
+    p_action TEXT,
+    p_student_id UUID DEFAULT NULL,
+    p_payload JSONB DEFAULT '{}'::jsonb
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_new_student RECORD;
+    v_next_number INT;
+    v_full_name TEXT;
+    v_nickname TEXT;
+    v_is_active BOOLEAN;
+BEGIN
+    IF p_admin_password IS NULL OR p_admin_password != 'kajenter35_2026' THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Akses ditolak: Kata sandi administrator salah.');
+    END IF;
+
+    IF p_action = 'add' THEN
+        v_full_name := trim(p_payload->>'fullName');
+        v_nickname := trim(p_payload->>'nickname');
+        v_is_active := COALESCE((p_payload->>'isActive')::BOOLEAN, true);
+
+        IF v_full_name IS NULL OR length(v_full_name) = 0 THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Nama lengkap wajib diisi.');
+        END IF;
+        IF v_nickname IS NULL OR length(v_nickname) = 0 THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Nama panggilan wajib diisi.');
+        END IF;
+
+        SELECT COALESCE(MAX(number), 0) + 1 INTO v_next_number FROM public.students;
+
+        INSERT INTO public.students (number, full_name, nickname, is_active)
+        VALUES (v_next_number, v_full_name, v_nickname, v_is_active)
+        RETURNING * INTO v_new_student;
+
+        RETURN jsonb_build_object(
+            'success', true,
+            'student', jsonb_build_object(
+                'id', v_new_student.id,
+                'number', v_new_student.number,
+                'fullName', v_new_student.full_name,
+                'nickname', v_new_student.nickname,
+                'isActive', v_new_student.is_active,
+                'createdAt', v_new_student.created_at
+            )
+        );
+
+    ELSIF p_action = 'update' THEN
+        IF p_student_id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
+        END IF;
+
+        UPDATE public.students
+        SET full_name = COALESCE(NULLIF(trim(p_payload->>'fullName'), ''), full_name),
+            nickname = COALESCE(NULLIF(trim(p_payload->>'nickname'), ''), nickname),
+            is_active = COALESCE((p_payload->>'isActive')::BOOLEAN, is_active),
+            updated_at = now()
+        WHERE id = p_student_id
+        RETURNING * INTO v_new_student;
+
+        IF NOT FOUND OR v_new_student.id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
+
+        RETURN jsonb_build_object(
+            'success', true,
+            'student', jsonb_build_object(
+                'id', v_new_student.id,
+                'number', v_new_student.number,
+                'fullName', v_new_student.full_name,
+                'nickname', v_new_student.nickname,
+                'isActive', v_new_student.is_active,
+                'createdAt', v_new_student.created_at
+            )
+        );
+
+    ELSIF p_action = 'toggle_active' THEN
+        IF p_student_id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
+        END IF;
+
+        UPDATE public.students
+        SET is_active = NOT is_active,
+            updated_at = now()
+        WHERE id = p_student_id
+        RETURNING * INTO v_new_student;
+
+        IF NOT FOUND OR v_new_student.id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
+
+        RETURN jsonb_build_object('success', true, 'isActive', v_new_student.is_active);
+
+    ELSIF p_action = 'delete' THEN
+        IF p_student_id IS NULL THEN
+            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
+        END IF;
+
+        DELETE FROM public.students WHERE id = p_student_id;
+
+        IF NOT FOUND THEN
+            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
+        END IF;
+
+        RETURN jsonb_build_object('success', true);
+    ELSE
+        RETURN jsonb_build_object('success', false, 'error', 'Aksi tidak dikenali.');
+    END IF;
+END;
+$$;
+
+-- 3. Admin Save Layout
+CREATE OR REPLACE FUNCTION public.admin_save_layout(
+    p_admin_password TEXT,
+    p_layout_id UUID,
+    p_name TEXT,
+    p_desk_position TEXT,
+    p_desk_label TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_admin_password IS NULL OR p_admin_password != 'kajenter35_2026' THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Akses ditolak: Kata sandi administrator salah.');
+    END IF;
+
+    IF p_layout_id IS NULL THEN
+        RETURN jsonb_build_object('success', false, 'error', 'ID tata letak wajib disertakan.');
+    END IF;
+
+    UPDATE public.classroom_layouts
+    SET name = COALESCE(NULLIF(trim(p_name), ''), name),
+        teacher_desk_position = COALESCE(p_desk_position, teacher_desk_position),
+        teacher_desk_label = COALESCE(NULLIF(trim(p_desk_label), ''), teacher_desk_label),
+        updated_at = now()
+    WHERE id = p_layout_id;
+
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Data tata letak kelas tidak ditemukan.');
+    END IF;
+
+    RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+-- 4. Admin Delete Saved Group
+CREATE OR REPLACE FUNCTION public.admin_delete_saved_group(
+    p_admin_password TEXT,
+    p_group_id UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_admin_password IS NULL OR p_admin_password != 'kajenter35_2026' THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Akses ditolak: Kata sandi administrator salah.');
+    END IF;
+
+    DELETE FROM public.saved_class_groups WHERE id = p_group_id;
+    RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+-- ====================================================================
+-- 5. FUNCTION GRANTS & PERMISSIONS
+-- ====================================================================
+
+-- Internal Seating Engine: revoked from anon, authenticated, public
 REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.cron_execute_weekly_reroll() TO postgres, service_role;
 
-GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT) TO anon, authenticated, service_role;
+REVOKE ALL ON FUNCTION public.execute_seating_reroll(TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT) TO postgres, service_role;
+
+-- Public Read Function
 GRANT EXECUTE ON FUNCTION public.get_active_seating() TO anon, authenticated, service_role;
 
+-- Admin RPCs (Password-protected): executable by clients, validated server-side
+GRANT EXECUTE ON FUNCTION public.admin_execute_reroll(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.admin_delete_saved_group(TEXT, UUID) TO anon, authenticated, service_role;
+
+-- ====================================================================
 -- 6. ROW LEVEL SECURITY & POLICIES
+--    Strict Read-Only access for public. No write policies on admin tables.
+-- ====================================================================
+
 ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.classroom_layouts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.seats ENABLE ROW LEVEL SECURITY;
@@ -405,28 +631,62 @@ ALTER TABLE public.seating_assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reroll_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.saved_class_groups ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Public students access" ON public.students FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public layouts access" ON public.classroom_layouts FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public seats access" ON public.seats FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public seating_periods access" ON public.seating_periods FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public seating_assignments access" ON public.seating_assignments FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Public reroll_history access" ON public.reroll_history FOR ALL USING (true) WITH CHECK (true);
+-- Administrative tables: Public SELECT only. No public write policies!
+CREATE POLICY "Public students read access" ON public.students FOR SELECT USING (true);
+CREATE POLICY "Public layouts read access" ON public.classroom_layouts FOR SELECT USING (true);
+CREATE POLICY "Public seats read access" ON public.seats FOR SELECT USING (true);
+CREATE POLICY "Public seating_periods read access" ON public.seating_periods FOR SELECT USING (true);
+CREATE POLICY "Public seating_assignments read access" ON public.seating_assignments FOR SELECT USING (true);
+CREATE POLICY "Public reroll_history read access" ON public.reroll_history FOR SELECT USING (true);
 
+-- saved_class_groups: Public SELECT & INSERT. UPDATE and DELETE are prohibited from anon.
 CREATE POLICY "Public saved_class_groups select" ON public.saved_class_groups FOR SELECT USING (true);
 CREATE POLICY "Public saved_class_groups insert" ON public.saved_class_groups FOR INSERT WITH CHECK (true);
-CREATE POLICY "Public saved_class_groups delete" ON public.saved_class_groups FOR DELETE USING (true);
 
--- 7. TABLE GRANTS
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO anon, authenticated, postgres, service_role;
-GRANT SELECT, UPDATE ON public.classroom_layouts TO anon, authenticated, postgres, service_role;
-GRANT SELECT, UPDATE ON public.seats TO anon, authenticated, postgres, service_role;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.seating_periods TO anon, authenticated, postgres, service_role;
-GRANT SELECT, INSERT, DELETE ON public.seating_assignments TO anon, authenticated, postgres, service_role;
-GRANT SELECT, INSERT, DELETE ON public.reroll_history TO anon, authenticated, postgres, service_role;
-GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated, postgres, service_role;
-REVOKE UPDATE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;
+-- ====================================================================
+-- 7. TABLE PRIVILEGES (GRANT / REVOKE)
+-- ====================================================================
 
+-- Students: read-only for anon/authenticated
+REVOKE ALL ON public.students FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.students TO anon, authenticated;
+GRANT ALL ON public.students TO postgres, service_role;
+
+-- Classroom Layouts: read-only for anon/authenticated
+REVOKE ALL ON public.classroom_layouts FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.classroom_layouts TO anon, authenticated;
+GRANT ALL ON public.classroom_layouts TO postgres, service_role;
+
+-- Seats: read-only for anon/authenticated
+REVOKE ALL ON public.seats FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.seats TO anon, authenticated;
+GRANT ALL ON public.seats TO postgres, service_role;
+
+-- Seating Periods: read-only for anon/authenticated
+REVOKE ALL ON public.seating_periods FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.seating_periods TO anon, authenticated;
+GRANT ALL ON public.seating_periods TO postgres, service_role;
+
+-- Seating Assignments: read-only for anon/authenticated
+REVOKE ALL ON public.seating_assignments FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.seating_assignments TO anon, authenticated;
+GRANT ALL ON public.seating_assignments TO postgres, service_role;
+
+-- Reroll History: read-only for anon/authenticated
+REVOKE ALL ON public.reroll_history FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.reroll_history TO anon, authenticated;
+GRANT ALL ON public.reroll_history TO postgres, service_role;
+
+-- Saved Class Groups: SELECT and INSERT only for anon/authenticated. UPDATE and DELETE revoked!
+REVOKE ALL ON public.saved_class_groups FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT ON public.saved_class_groups TO anon, authenticated;
+GRANT ALL ON public.saved_class_groups TO postgres, service_role;
+REVOKE UPDATE, DELETE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;
+
+-- ====================================================================
 -- 8. REALTIME PUBLICATION
+-- ====================================================================
+
 DO $$
 BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.seating_periods;
@@ -437,7 +697,10 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.saved_class_groups;
 EXCEPTION WHEN OTHERS THEN END $$;
 
+-- ====================================================================
 -- 9. SEED DATA (26 STUDENTS & STANDARD 3-BLOCK LAYOUT)
+-- ====================================================================
+
 INSERT INTO public.students (number, full_name, nickname, is_active)
 VALUES
 (1, 'ABIMANYU PUTRA PRIANDANA', 'Bimbim', true),
@@ -513,7 +776,9 @@ BEGIN
     END IF;
 END $$;
 
--- 10. CRON SCHEDULER REGISTRATION
+-- ====================================================================
+-- 10. CRON SCHEDULER REGISTRATION (Sunday 06:00 WIB = Saturday 23:00 UTC)
+-- ====================================================================
 DO $$
 DECLARE
     v_jobid BIGINT;
