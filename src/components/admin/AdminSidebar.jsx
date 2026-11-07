@@ -10,7 +10,6 @@ import {
   ExternalLink,
   ChevronRight,
   Shield,
-  KeyRound,
 } from 'lucide-react';
 
 export default function AdminSidebar({
@@ -27,7 +26,6 @@ export default function AdminSidebar({
     { id: 'seating', label: 'Denah & Acak Ulang', icon: Dices },
     { id: 'history', label: 'Riwayat Aktivitas', icon: History },
     { id: 'schedule', label: 'Pengaturan Jadwal', icon: Clock },
-    { id: 'security', label: 'Keamanan Sandi', icon: KeyRound },
   ];
 
   return (
@@ -98,7 +96,7 @@ export default function AdminSidebar({
               </p>
             </div>
             <p className="text-[10px] text-content-secondary truncate">
-              Otentikasi Sandi Server
+              Akses Admin Aktif
             </p>
           </div>
           <button

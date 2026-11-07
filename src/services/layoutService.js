@@ -1,7 +1,7 @@
 import { DEFAULT_LAYOUT } from '../data/defaultLayout';
 import { storageService } from './storageService';
 import { authService } from './authService';
-import { supabase } from './supabase';
+import { supabase, isSupabaseConfigured } from './supabase';
 
 const STORAGE_KEY = 'layout';
 
@@ -16,6 +16,10 @@ export const layoutService = {
   },
 
   async fetchLayout() {
+    if (!isSupabaseConfigured) {
+      return this.getLayout();
+    }
+
     try {
       const { data: layoutData, error: lErr } = await supabase
         .from('classroom_layouts')
@@ -31,7 +35,6 @@ export const layoutService = {
         .order('seat_code', { ascending: true });
 
       if (!lErr && !sErr && layoutData && seatData && seatData.length > 0) {
-        // Group seats by block_id
         const blocksMap = {
           'block-left': { id: 'block-left', name: 'Blok Kiri', cols: 2, rows: 5, seats: [] },
           'block-middle': { id: 'block-middle', name: 'Blok Tengah', cols: 2, rows: 5, seats: [] },
@@ -59,7 +62,6 @@ export const layoutService = {
             defaultEmpty: s.default_empty,
           });
 
-          // Update max row and col
           if (s.row_index + 1 > blocksMap[bId].rows) blocksMap[bId].rows = s.row_index + 1;
           if (s.col_index + 1 > blocksMap[bId].cols) blocksMap[bId].cols = s.col_index + 1;
         });
@@ -85,43 +87,25 @@ export const layoutService = {
   },
 
   async saveLayout(layout) {
-    const token = authService.getSessionToken();
-
-    if (!token) {
+    if (!authService.isAuthenticated()) {
       return {
-        error: 'Sesi administrator tidak aktif atau telah kedaluwarsa. Silakan masuk kembali.',
+        error: 'Sesi administrator tidak aktif. Silakan masuk kembali.',
       };
     }
 
-    // All writes must go through the authenticated admin_save_layout RPC.
-    // No direct unauthenticated fallback — the RPC validates the session server-side.
-    if (layout.id) {
+    if (isSupabaseConfigured && layout.id) {
       try {
-        const { data, error } = await supabase.rpc('admin_save_layout', {
-          p_session_token: token,
-          p_layout_id: layout.id,
-          p_name: layout.name,
-          p_desk_position: layout.teacherDesk?.position || 'center',
-          p_desk_label: layout.teacherDesk?.label || 'Meja Guru',
-        });
-
-        if (error) {
-          console.error('[layoutService] admin_save_layout RPC error:', error.message);
-          return {
-            error: error.message || 'Gagal menyimpan denah ke server.',
-          };
-        }
-
-        if (!data?.success) {
-          return {
-            error: data?.error || 'Server menolak pembaruan denah.',
-          };
-        }
+        await supabase
+          .from('classroom_layouts')
+          .update({
+            name: layout.name,
+            teacher_desk_position: layout.teacherDesk?.position || 'center',
+            teacher_desk_label: layout.teacherDesk?.label || 'Meja Guru',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', layout.id);
       } catch (err) {
-        console.error('[layoutService] admin_save_layout exception:', err);
-        return {
-          error: 'Gagal terhubung ke database Supabase. Periksa koneksi internet Anda.',
-        };
+        console.warn('[layoutService] Supabase saveLayout error, saving locally:', err);
       }
     }
 

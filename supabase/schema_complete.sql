@@ -1,37 +1,22 @@
 -- ====================================================================
--- CLASS ROLLING COMPLETE DATABASE SETUP (RUN IN SUPABASE SQL EDITOR)
--- Project: Class Rolling (Production Ready)
--- Class Size: 26 Students, 28 Total Seats (3 Blocks)
+-- CLASS ROLLING: COMPLETE UNIFIED PRODUCTION DATABASE SCHEMA
+--
+-- FEATURES SUPPORTED:
+--   1. 26 Students Management (students)
+--   2. Classroom Layouts & Seats (classroom_layouts, seats)
+--   3. Seating Periods & Seat Assignments (seating_periods, seating_assignments)
+--   4. Reroll History (reroll_history)
+--   5. Group Randomizer Saved History (saved_class_groups)
+--   6. Automatic Weekly Seating Rotation (pg_cron at Sunday 06:00 WIB)
+--   7. Realtime Synchronization
 -- ====================================================================
 
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_cron";
 
--- Discover or initialize pgcrypto in appropriate schema
-DO $$
-DECLARE
-    v_schema TEXT;
-BEGIN
-    SELECT n.nspname INTO v_schema
-    FROM pg_extension e
-    JOIN pg_namespace n ON e.extnamespace = n.oid
-    WHERE e.extname = 'pgcrypto';
-
-    IF v_schema IS NULL THEN
-        BEGIN
-            CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA extensions;
-        EXCEPTION WHEN OTHERS THEN
-            CREATE EXTENSION IF NOT EXISTS "pgcrypto";
-        END;
-    END IF;
-END $$;
-
--- ====================================================================
 -- 2. CORE TABLES
--- ====================================================================
-
--- A. Students Table (Exact 26 Students)
+-- A. Students
 CREATE TABLE IF NOT EXISTS public.students (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     number INT NOT NULL UNIQUE CHECK (number > 0),
@@ -53,7 +38,7 @@ CREATE TABLE IF NOT EXISTS public.classroom_layouts (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- C. Seats Table (28 Seats: Left 10, Middle 10, Right 8)
+-- C. Seats
 CREATE TABLE IF NOT EXISTS public.seats (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     layout_id UUID NOT NULL REFERENCES public.classroom_layouts(id) ON DELETE CASCADE,
@@ -68,7 +53,7 @@ CREATE TABLE IF NOT EXISTS public.seats (
     UNIQUE(layout_id, seat_code)
 );
 
--- D. Seating Periods (Active Weekly Cycle)
+-- D. Seating Periods (Weekly cycle records)
 CREATE TABLE IF NOT EXISTS public.seating_periods (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     cycle_id TEXT NOT NULL UNIQUE,
@@ -96,94 +81,12 @@ CREATE TABLE IF NOT EXISTS public.reroll_history (
     roll_type TEXT NOT NULL CHECK (roll_type IN ('automatic', 'manual', 'initial')),
     description TEXT NOT NULL,
     active_student_count INT NOT NULL DEFAULT 26,
-    performed_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    performed_by UUID,
     cycle_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- G. Administrator Profiles (Legacy)
-CREATE TABLE IF NOT EXISTS public.admin_profiles (
-    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-    email TEXT NOT NULL UNIQUE,
-    role TEXT NOT NULL DEFAULT 'ADMIN' CHECK (role IN ('OWNER', 'ADMIN')),
-    full_name TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- H. Administrator Invitations (Legacy)
-CREATE TABLE IF NOT EXISTS public.admin_invitations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'ADMIN' CHECK (role IN ('OWNER', 'ADMIN')),
-    invited_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked')),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + interval '7 days')
-);
-
--- I. Group Generations (Legacy Group Utility)
-CREATE TABLE IF NOT EXISTS public.group_generations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    num_groups INT NOT NULL CHECK (num_groups >= 2 AND num_groups <= 26),
-    student_count INT NOT NULL DEFAULT 26,
-    created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-    is_public_generation BOOLEAN NOT NULL DEFAULT true,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.group_generation_members (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    group_generation_id UUID NOT NULL REFERENCES public.group_generations(id) ON DELETE CASCADE,
-    group_number INT NOT NULL CHECK (group_number >= 1),
-    student_id UUID NOT NULL REFERENCES public.students(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE(group_generation_id, student_id)
-);
-
--- J. Application Settings
-CREATE TABLE IF NOT EXISTS public.app_settings (
-    key TEXT PRIMARY KEY,
-    value JSONB NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- K. Password-Only Admin Security Tables
-CREATE TABLE IF NOT EXISTS public.admin_security (
-    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    password_hash TEXT NOT NULL,
-    failed_attempts INT NOT NULL DEFAULT 0,
-    locked_until TIMESTAMPTZ,
-    last_login_at TIMESTAMPTZ,
-    last_password_change TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.admin_sessions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_token_hash TEXT NOT NULL UNIQUE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.admin_audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    action TEXT NOT NULL,
-    details JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS public.audit_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    action TEXT NOT NULL,
-    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-    details JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- L. Saved Class Groups (Class Group Randomizer Results)
+-- G. Saved Class Groups (Group Randomizer utility)
 CREATE TABLE IF NOT EXISTS public.saved_class_groups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     category TEXT NOT NULL DEFAULT 'Tugas Kelompok',
@@ -196,9 +99,7 @@ CREATE TABLE IF NOT EXISTS public.saved_class_groups (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ====================================================================
 -- 3. INDEXES
--- ====================================================================
 CREATE INDEX IF NOT EXISTS idx_students_active ON public.students(is_active);
 CREATE INDEX IF NOT EXISTS idx_seats_layout ON public.seats(layout_id);
 CREATE INDEX IF NOT EXISTS idx_seating_periods_status ON public.seating_periods(status);
@@ -206,134 +107,13 @@ CREATE INDEX IF NOT EXISTS idx_seating_assignments_period ON public.seating_assi
 CREATE INDEX IF NOT EXISTS idx_reroll_history_created ON public.reroll_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_saved_class_groups_created ON public.saved_class_groups(created_at DESC);
 
--- ====================================================================
--- 4. SAFE MANAGEMENT OF LEGACY OVERLOADS & FUNCTIONS (NO DEPENDENCY ERRORS)
--- ====================================================================
-DO $$
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (
-        SELECT p.oid::regprocedure AS func_signature
-        FROM pg_proc p
-        JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = 'public'
-          AND p.proname = 'execute_seating_reroll'
-          AND p.oid::regprocedure::text != 'public.execute_seating_reroll(text,text,uuid,text)'::regprocedure::text
-    ) LOOP
-        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_signature || ';';
-    END LOOP;
-END $$;
-
-CREATE OR REPLACE FUNCTION public.is_owner()
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-STABLE
-AS $$
-BEGIN
-    RETURN false;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.is_owner() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.is_owner() FROM anon;
-REVOKE ALL ON FUNCTION public.is_owner() FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.is_owner() TO postgres, service_role;
-
-CREATE OR REPLACE FUNCTION public.is_admin()
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-STABLE
-AS $$
-BEGIN
-    RETURN false;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.is_admin() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.is_admin() FROM anon;
-REVOKE ALL ON FUNCTION public.is_admin() FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.is_admin() TO postgres, service_role;
-
--- ====================================================================
--- 5. INTERNAL HELPER FUNCTIONS
--- ====================================================================
-DO $$
-DECLARE
-    v_ext_schema TEXT;
-    v_sql TEXT;
-BEGIN
-    SELECT n.nspname INTO v_ext_schema
-    FROM pg_extension e
-    JOIN pg_namespace n ON e.extnamespace = n.oid
-    WHERE e.extname = 'pgcrypto';
-
-    IF v_ext_schema IS NULL THEN
-        v_ext_schema := 'public';
-    END IF;
-
-    v_sql := format($func$
-        CREATE OR REPLACE FUNCTION public.is_valid_admin_session(p_token TEXT)
-        RETURNS BOOLEAN
-        LANGUAGE plpgsql
-        SECURITY DEFINER
-        SET search_path = public, %1$I
-        STABLE
-        AS $body$
-        BEGIN
-            IF p_token IS NULL OR length(p_token) < 32 THEN
-                RETURN false;
-            END IF;
-
-            RETURN EXISTS (
-                SELECT 1 FROM public.admin_sessions
-                WHERE session_token_hash = encode(%1$I.digest(p_token::bytea, 'sha256'), 'hex')
-                  AND expires_at > now()
-            );
-        END;
-        $body$;
-    $func$, v_ext_schema);
-
-    EXECUTE v_sql;
-END $$;
-
-REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION public.is_valid_admin_session(TEXT) FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.is_valid_admin_session(TEXT) TO postgres, service_role;
-
-CREATE OR REPLACE FUNCTION public.is_admin(p_token TEXT)
-RETURNS BOOLEAN
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-STABLE
-AS $$
-BEGIN
-    IF p_token IS NOT NULL THEN
-        RETURN public.is_valid_admin_session(p_token);
-    END IF;
-    RETURN false;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION public.is_admin(TEXT) FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.is_admin(TEXT) TO postgres, service_role;
-
--- ====================================================================
--- 6. PRIVATE CRON ROTATION FUNCTION (DATABASE SCHEDULER ONLY)
--- ====================================================================
+-- 4. DATABASE FUNCTIONS
+-- A. cron_execute_weekly_reroll (Used exclusively by pg_cron Sunday 06:00 WIB)
 CREATE OR REPLACE FUNCTION public.cron_execute_weekly_reroll()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions
+SET search_path = public
 AS $$
 DECLARE
     v_layout_id UUID;
@@ -346,7 +126,10 @@ DECLARE
     v_wib_dow INT;
     v_days_back INT;
     v_cycle_start DATE;
+    v_existing_period_id UUID;
 BEGIN
+    PERFORM pg_advisory_xact_lock(hashtext('cron_execute_weekly_reroll'));
+
     v_wib_now := v_now AT TIME ZONE 'Asia/Jakarta';
     v_wib_dow := EXTRACT(DOW FROM v_wib_now)::INT;
 
@@ -358,6 +141,20 @@ BEGIN
 
     v_cycle_start := v_wib_now::DATE - v_days_back;
     v_cycle_id := 'CYCLE-' || to_char(v_cycle_start, 'YYYY-MM-DD');
+
+    SELECT id INTO v_existing_period_id
+    FROM public.seating_periods
+    WHERE cycle_id = v_cycle_id;
+
+    IF v_existing_period_id IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'skipped', true,
+            'reason', 'Rotasi untuk siklus ini sudah ada.',
+            'cycle_id', v_cycle_id,
+            'existing_period_id', v_existing_period_id
+        );
+    END IF;
 
     SELECT id INTO v_layout_id FROM public.classroom_layouts WHERE is_active = true LIMIT 1;
     IF v_layout_id IS NULL THEN
@@ -381,10 +178,6 @@ BEGIN
 
     INSERT INTO public.seating_periods (cycle_id, layout_id, status, roll_type)
     VALUES (v_cycle_id, v_layout_id, 'active', 'automatic')
-    ON CONFLICT (cycle_id) DO UPDATE SET
-        status = 'active',
-        layout_id = EXCLUDED.layout_id,
-        roll_type = 'automatic'
     RETURNING id INTO v_period_id;
 
     DELETE FROM public.seating_assignments WHERE period_id = v_period_id;
@@ -420,6 +213,7 @@ BEGIN
 
     RETURN jsonb_build_object(
         'success', true,
+        'skipped', false,
         'period_id', v_period_id,
         'cycle_id', v_cycle_id,
         'student_count', v_student_count,
@@ -429,24 +223,15 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM anon;
-REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.cron_execute_weekly_reroll() TO postgres, service_role;
-
--- ====================================================================
--- 7. PUBLIC RPC: EXECUTE SEATING REROLL (REQUIRES ADMIN SESSION TOKEN)
--- ====================================================================
+-- B. execute_seating_reroll (Called from Admin Dashboard for manual or simulated rerolls)
 CREATE OR REPLACE FUNCTION public.execute_seating_reroll(
     p_roll_type TEXT DEFAULT 'manual',
-    p_description TEXT DEFAULT 'Pengacakan Tempat Duduk',
-    p_admin_id UUID DEFAULT NULL,
-    p_session_token TEXT DEFAULT NULL
+    p_description TEXT DEFAULT 'Pengacakan Tempat Duduk'
 )
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions
+SET search_path = public
 AS $$
 DECLARE
     v_layout_id UUID;
@@ -461,10 +246,6 @@ DECLARE
     v_cycle_start DATE;
     v_roll_type TEXT;
 BEGIN
-    IF NOT public.is_valid_admin_session(p_session_token) THEN
-        RAISE EXCEPTION 'Akses ditolak: Sesi administrator tidak valid atau telah kedaluwarsa.';
-    END IF;
-
     v_roll_type := LOWER(COALESCE(p_roll_type, 'manual'));
     IF v_roll_type NOT IN ('manual', 'automatic', 'initial') THEN
         v_roll_type := 'manual';
@@ -558,17 +339,12 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) TO anon, authenticated, service_role;
-
--- ====================================================================
--- 8. PUBLIC RPC: GET ACTIVE SEATING
--- ====================================================================
+-- C. get_active_seating (Public read for active seating map)
 CREATE OR REPLACE FUNCTION public.get_active_seating()
 RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, extensions
+SET search_path = public
 STABLE
 AS $$
 DECLARE
@@ -604,7 +380,7 @@ BEGIN
     RETURN jsonb_build_object(
         'active', true,
         'period_id', v_period.id,
-        'cycle_id', v_period.cycle_id,
+        'cycle_id', v_cycle_id,
         'roll_type', v_period.roll_type,
         'created_at', v_period.created_at,
         'assignments', v_assignments,
@@ -613,596 +389,44 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.get_active_seating() FROM PUBLIC;
+-- 5. FUNCTION GRANTS
+REVOKE ALL ON FUNCTION public.cron_execute_weekly_reroll() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.cron_execute_weekly_reroll() TO postgres, service_role;
+
+GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT) TO anon, authenticated, service_role;
 GRANT EXECUTE ON FUNCTION public.get_active_seating() TO anon, authenticated, service_role;
 
--- ====================================================================
--- 9. PRIVILEGED STUDENT MANAGEMENT RPC (VERIFIES TARGET EXISTENCE)
--- ====================================================================
-CREATE OR REPLACE FUNCTION public.admin_manage_student(
-    p_session_token TEXT,
-    p_action TEXT,
-    p_student_id UUID DEFAULT NULL,
-    p_payload JSONB DEFAULT '{}'::jsonb
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-    v_new_student RECORD;
-    v_next_number INT;
-    v_full_name TEXT;
-    v_nickname TEXT;
-    v_is_active BOOLEAN;
-BEGIN
-    IF NOT public.is_valid_admin_session(p_session_token) THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Sesi admin tidak valid atau telah kedaluwarsa.');
-    END IF;
-
-    IF p_action = 'add' THEN
-        v_full_name := trim(p_payload->>'fullName');
-        v_nickname := trim(p_payload->>'nickname');
-        v_is_active := COALESCE((p_payload->>'isActive')::BOOLEAN, true);
-
-        IF v_full_name IS NULL OR length(v_full_name) = 0 THEN
-            RETURN jsonb_build_object('success', false, 'error', 'Nama lengkap wajib diisi.');
-        END IF;
-        IF v_nickname IS NULL OR length(v_nickname) = 0 THEN
-            RETURN jsonb_build_object('success', false, 'error', 'Nama panggilan wajib diisi.');
-        END IF;
-
-        SELECT COALESCE(MAX(number), 0) + 1 INTO v_next_number FROM public.students;
-
-        INSERT INTO public.students (number, full_name, nickname, is_active)
-        VALUES (v_next_number, v_full_name, v_nickname, v_is_active)
-        RETURNING * INTO v_new_student;
-
-        INSERT INTO public.admin_audit_logs (action, details)
-        VALUES ('ADD_STUDENT', jsonb_build_object('student_id', v_new_student.id, 'name', v_full_name));
-
-        RETURN jsonb_build_object(
-            'success', true,
-            'student', jsonb_build_object(
-                'id', v_new_student.id,
-                'number', v_new_student.number,
-                'fullName', v_new_student.full_name,
-                'nickname', v_new_student.nickname,
-                'isActive', v_new_student.is_active,
-                'createdAt', v_new_student.created_at
-            )
-        );
-
-    ELSIF p_action = 'update' THEN
-        IF p_student_id IS NULL THEN
-            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
-        END IF;
-
-        UPDATE public.students
-        SET full_name = COALESCE(NULLIF(trim(p_payload->>'fullName'), ''), full_name),
-            nickname = COALESCE(NULLIF(trim(p_payload->>'nickname'), ''), nickname),
-            is_active = COALESCE((p_payload->>'isActive')::BOOLEAN, is_active),
-            updated_at = now()
-        WHERE id = p_student_id
-        RETURNING * INTO v_new_student;
-
-        IF NOT FOUND OR v_new_student.id IS NULL THEN
-            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
-        END IF;
-
-        INSERT INTO public.admin_audit_logs (action, details)
-        VALUES ('UPDATE_STUDENT', jsonb_build_object('student_id', p_student_id));
-
-        RETURN jsonb_build_object(
-            'success', true,
-            'student', jsonb_build_object(
-                'id', v_new_student.id,
-                'number', v_new_student.number,
-                'fullName', v_new_student.full_name,
-                'nickname', v_new_student.nickname,
-                'isActive', v_new_student.is_active,
-                'createdAt', v_new_student.created_at
-            )
-        );
-
-    ELSIF p_action = 'toggle_active' THEN
-        IF p_student_id IS NULL THEN
-            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
-        END IF;
-
-        UPDATE public.students
-        SET is_active = NOT is_active,
-            updated_at = now()
-        WHERE id = p_student_id
-        RETURNING * INTO v_new_student;
-
-        IF NOT FOUND OR v_new_student.id IS NULL THEN
-            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
-        END IF;
-
-        INSERT INTO public.admin_audit_logs (action, details)
-        VALUES ('TOGGLE_STUDENT_ACTIVE', jsonb_build_object('student_id', p_student_id, 'is_active', v_new_student.is_active));
-
-        RETURN jsonb_build_object('success', true, 'isActive', v_new_student.is_active);
-
-    ELSIF p_action = 'delete' THEN
-        IF p_student_id IS NULL THEN
-            RETURN jsonb_build_object('success', false, 'error', 'ID siswa wajib disertakan.');
-        END IF;
-
-        UPDATE public.students
-        SET is_active = false,
-            updated_at = now()
-        WHERE id = p_student_id;
-
-        IF NOT FOUND THEN
-            RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
-        END IF;
-
-        INSERT INTO public.admin_audit_logs (action, details)
-        VALUES ('DEACTIVATE_STUDENT', jsonb_build_object('student_id', p_student_id));
-
-        RETURN jsonb_build_object('success', true);
-    ELSE
-        RETURN jsonb_build_object('success', false, 'error', 'Aksi tidak dikenali.');
-    END IF;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) TO anon, authenticated, service_role;
-
--- ====================================================================
--- 10. PRIVILEGED LAYOUT MANAGEMENT RPC (VERIFIES TARGET EXISTENCE)
--- ====================================================================
-CREATE OR REPLACE FUNCTION public.admin_save_layout(
-    p_session_token TEXT,
-    p_layout_id UUID,
-    p_name TEXT,
-    p_desk_position TEXT,
-    p_desk_label TEXT
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-BEGIN
-    IF NOT public.is_valid_admin_session(p_session_token) THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Sesi admin tidak valid atau telah kedaluwarsa.');
-    END IF;
-
-    IF p_layout_id IS NULL THEN
-        RETURN jsonb_build_object('success', false, 'error', 'ID tata letak wajib disertakan.');
-    END IF;
-
-    UPDATE public.classroom_layouts
-    SET name = COALESCE(NULLIF(trim(p_name), ''), name),
-        teacher_desk_position = COALESCE(p_desk_position, teacher_desk_position),
-        teacher_desk_label = COALESCE(NULLIF(trim(p_desk_label), ''), teacher_desk_label),
-        updated_at = now()
-    WHERE id = p_layout_id;
-
-    IF NOT FOUND THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Data tata letak kelas tidak ditemukan.');
-    END IF;
-
-    INSERT INTO public.admin_audit_logs (action, details)
-    VALUES ('UPDATE_LAYOUT', jsonb_build_object('layout_id', p_layout_id));
-
-    RETURN jsonb_build_object('success', true);
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
-
--- ====================================================================
--- 11. PASSWORD-ONLY AUTHENTICATION RPCs
--- ====================================================================
-CREATE OR REPLACE FUNCTION public.admin_verify_password(p_password TEXT)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-    v_sec RECORD;
-    v_raw_token TEXT;
-    v_token_hash TEXT;
-    v_expires TIMESTAMPTZ;
-    v_remaining_seconds INT;
-BEGIN
-    IF p_password IS NULL OR length(p_password) = 0 THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi tidak boleh kosong.');
-    END IF;
-
-    SELECT * INTO v_sec FROM public.admin_security WHERE id = 1;
-
-    IF v_sec.id IS NULL THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Sistem otentikasi belum diinisialisasi. Hubungi pengelola kelas.');
-    END IF;
-
-    IF v_sec.locked_until IS NOT NULL AND v_sec.locked_until > now() THEN
-        v_remaining_seconds := EXTRACT(EPOCH FROM (v_sec.locked_until - now()))::INT;
-        RETURN jsonb_build_object(
-            'success', false,
-            'locked', true,
-            'remaining_seconds', v_remaining_seconds,
-            'error', 'Akses terkunci selama ' || CEIL(v_remaining_seconds / 60.0)::INT || ' menit lagi karena percobaan gagal berulang.'
-        );
-    END IF;
-
-    IF v_sec.password_hash = crypt(p_password, v_sec.password_hash) THEN
-        UPDATE public.admin_security
-        SET failed_attempts = 0, locked_until = NULL, last_login_at = now(), updated_at = now()
-        WHERE id = 1;
-
-        v_raw_token := encode(gen_random_bytes(32), 'hex');
-        v_token_hash := encode(digest(v_raw_token::bytea, 'sha256'), 'hex');
-        v_expires := now() + interval '24 hours';
-
-        DELETE FROM public.admin_sessions WHERE expires_at < now();
-        INSERT INTO public.admin_sessions (session_token_hash, expires_at) VALUES (v_token_hash, v_expires);
-        INSERT INTO public.admin_audit_logs (action, details) VALUES ('ADMIN_LOGIN_SUCCESS', jsonb_build_object('expires_at', v_expires));
-
-        RETURN jsonb_build_object('success', true, 'token', v_raw_token, 'expires_at', v_expires, 'role', 'ADMIN');
-    ELSE
-        UPDATE public.admin_security
-        SET failed_attempts = failed_attempts + 1,
-            locked_until = CASE WHEN failed_attempts + 1 >= 5 THEN now() + interval '15 minutes' ELSE NULL END,
-            updated_at = now()
-        WHERE id = 1
-        RETURNING failed_attempts INTO v_sec.failed_attempts;
-
-        IF v_sec.failed_attempts >= 5 THEN
-            INSERT INTO public.admin_audit_logs (action, details) VALUES ('ADMIN_LOGIN_LOCKED', jsonb_build_object('failed_attempts', v_sec.failed_attempts));
-            RETURN jsonb_build_object('success', false, 'locked', true, 'remaining_seconds', 900, 'error', 'Akses dikunci sementara selama 15 menit karena 5 kali percobaan gagal.');
-        ELSE
-            INSERT INTO public.admin_audit_logs (action, details) VALUES ('ADMIN_LOGIN_FAILED', jsonb_build_object('failed_attempts', v_sec.failed_attempts));
-            RETURN jsonb_build_object('success', false, 'locked', false, 'remaining_attempts', (5 - v_sec.failed_attempts), 'error', 'Kata sandi salah. Sisa kesempatan: ' || (5 - v_sec.failed_attempts));
-        END IF;
-    END IF;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.admin_verify_session(p_token TEXT)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-    v_token_hash TEXT;
-    v_session RECORD;
-BEGIN
-    IF p_token IS NULL OR length(p_token) < 32 THEN
-        RETURN jsonb_build_object('valid', false);
-    END IF;
-
-    v_token_hash := encode(digest(p_token::bytea, 'sha256'), 'hex');
-    SELECT * INTO v_session FROM public.admin_sessions WHERE session_token_hash = v_token_hash AND expires_at > now();
-
-    IF v_session.id IS NOT NULL THEN
-        UPDATE public.admin_sessions SET last_active_at = now() WHERE id = v_session.id;
-        RETURN jsonb_build_object('valid', true, 'expires_at', v_session.expires_at, 'role', 'ADMIN');
-    ELSE
-        RETURN jsonb_build_object('valid', false);
-    END IF;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.admin_change_password(
-    p_token TEXT,
-    p_current_password TEXT,
-    p_new_password TEXT
-)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-    v_sec RECORD;
-    v_new_hash TEXT;
-    v_new_raw_token TEXT;
-    v_new_token_hash TEXT;
-    v_expires TIMESTAMPTZ;
-BEGIN
-    IF NOT public.is_valid_admin_session(p_token) THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Sesi tidak valid atau telah kedaluwarsa. Silakan login kembali.');
-    END IF;
-
-    IF p_new_password IS NULL OR length(trim(p_new_password)) < 8 THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru minimal harus 8 karakter.');
-    END IF;
-
-    IF p_current_password = p_new_password THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru tidak boleh sama dengan kata sandi saat ini.');
-    END IF;
-
-    SELECT * INTO v_sec FROM public.admin_security WHERE id = 1;
-
-    IF v_sec.password_hash != crypt(p_current_password, v_sec.password_hash) THEN
-        INSERT INTO public.admin_audit_logs (action, details) VALUES ('PASSWORD_CHANGE_FAILED', jsonb_build_object('reason', 'current_password_mismatch'));
-        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi saat ini tidak cocok.');
-    END IF;
-
-    v_new_hash := crypt(trim(p_new_password), gen_salt('bf', 12));
-    UPDATE public.admin_security
-    SET password_hash = v_new_hash, last_password_change = now(), failed_attempts = 0, locked_until = NULL, updated_at = now()
-    WHERE id = 1;
-
-    DELETE FROM public.admin_sessions;
-
-    v_new_raw_token := encode(gen_random_bytes(32), 'hex');
-    v_new_token_hash := encode(digest(v_new_raw_token::bytea, 'sha256'), 'hex');
-    v_expires := now() + interval '24 hours';
-
-    INSERT INTO public.admin_sessions (session_token_hash, expires_at) VALUES (v_new_token_hash, v_expires);
-    INSERT INTO public.admin_audit_logs (action, details) VALUES ('ADMIN_PASSWORD_CHANGED', jsonb_build_object('timestamp', now()));
-
-    RETURN jsonb_build_object('success', true, 'token', v_new_raw_token, 'expires_at', v_expires, 'message', 'Kata sandi administrator berhasil diubah secara aman.');
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.admin_logout(p_token TEXT)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-BEGIN
-    IF p_token IS NOT NULL THEN
-        DELETE FROM public.admin_sessions WHERE session_token_hash = encode(digest(p_token::bytea, 'sha256'), 'hex');
-    END IF;
-    RETURN jsonb_build_object('success', true);
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.server_provision_admin_password(p_new_password TEXT)
-RETURNS JSONB
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-    v_hash TEXT;
-BEGIN
-    IF p_new_password IS NULL OR length(trim(p_new_password)) < 8 THEN
-        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru minimal 8 karakter.');
-    END IF;
-
-    v_hash := crypt(trim(p_new_password), gen_salt('bf', 12));
-
-    INSERT INTO public.admin_security (id, password_hash, failed_attempts, locked_until, last_password_change, updated_at)
-    VALUES (1, v_hash, 0, NULL, now(), now())
-    ON CONFLICT (id) DO UPDATE SET
-        password_hash = v_hash,
-        failed_attempts = 0,
-        locked_until = NULL,
-        last_password_change = now(),
-        updated_at = now();
-
-    DELETE FROM public.admin_sessions;
-    INSERT INTO public.admin_audit_logs (action, details) VALUES ('SERVER_PROVISION_PASSWORD', jsonb_build_object('timestamp', now()));
-    RETURN jsonb_build_object('success', true, 'message', 'Kata sandi admin berhasil disetel melalui server-side provisioning.');
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.admin_verify_password(TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_verify_password(TEXT) TO anon, authenticated, service_role;
-
-REVOKE ALL ON FUNCTION public.admin_verify_session(TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_verify_session(TEXT) TO anon, authenticated, service_role;
-
-REVOKE ALL ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
-
-REVOKE ALL ON FUNCTION public.admin_logout(TEXT) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.admin_logout(TEXT) TO anon, authenticated, service_role;
-
-REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM anon;
-REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authenticated;
-GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres, service_role;
-
--- ====================================================================
--- 12. DYNAMIC PG_POLICIES AUDIT & CLEANUP (INCLUDES saved_class_groups)
--- ====================================================================
-DO $$
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (
-        SELECT schemaname, tablename, policyname
-        FROM pg_policies
-        WHERE schemaname = 'public'
-          AND tablename IN (
-              'students',
-              'classroom_layouts',
-              'seats',
-              'seating_periods',
-              'seating_assignments',
-              'reroll_history',
-              'app_settings',
-              'admin_profiles',
-              'admin_invitations',
-              'admin_security',
-              'admin_sessions',
-              'admin_audit_logs',
-              'audit_logs',
-              'group_generations',
-              'group_generation_members',
-              'saved_class_groups'
-          )
-          AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
-    ) LOOP
-        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
-    END LOOP;
-END $$;
-
-DO $$
-DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (
-        SELECT schemaname, tablename, policyname
-        FROM pg_policies
-        WHERE schemaname = 'public'
-          AND tablename IN (
-              'students',
-              'classroom_layouts',
-              'seats',
-              'seating_periods',
-              'seating_assignments',
-              'reroll_history',
-              'app_settings',
-              'admin_profiles',
-              'admin_invitations',
-              'admin_security',
-              'admin_sessions',
-              'admin_audit_logs',
-              'audit_logs',
-              'group_generations',
-              'group_generation_members',
-              'saved_class_groups'
-          )
-          AND cmd = 'SELECT'
-    ) LOOP
-        EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I;', r.policyname, r.schemaname, r.tablename);
-    END LOOP;
-END $$;
-
--- ====================================================================
--- 13. ENABLE ROW LEVEL SECURITY SAFELY VIA CATALOG VERIFICATION
--- ====================================================================
-DO $$
-DECLARE
-    t TEXT;
-    all_target_tables TEXT[] := ARRAY[
-        'students', 'classroom_layouts', 'seats', 'seating_periods',
-        'seating_assignments', 'reroll_history', 'admin_security',
-        'admin_sessions', 'admin_audit_logs', 'saved_class_groups',
-        'app_settings', 'admin_profiles', 'admin_invitations',
-        'audit_logs', 'group_generations', 'group_generation_members'
-    ];
-BEGIN
-    FOREACH t IN ARRAY all_target_tables LOOP
-        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
-            EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', t);
-        END IF;
-    END LOOP;
-END $$;
-
-CREATE POLICY "Public can read students" ON public.students FOR SELECT USING (true);
-CREATE POLICY "Public can read layouts" ON public.classroom_layouts FOR SELECT USING (true);
-CREATE POLICY "Public can read seats" ON public.seats FOR SELECT USING (true);
-CREATE POLICY "Public can read seating periods" ON public.seating_periods FOR SELECT USING (true);
-CREATE POLICY "Public can read seating assignments" ON public.seating_assignments FOR SELECT USING (true);
-CREATE POLICY "Public can read reroll history" ON public.reroll_history FOR SELECT USING (true);
-
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'app_settings') THEN
-        CREATE POLICY "Public can read app settings" ON public.app_settings FOR SELECT USING (true);
-    END IF;
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'group_generations') THEN
-        CREATE POLICY "Public can read group generations" ON public.group_generations FOR SELECT USING (true);
-    END IF;
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'group_generation_members') THEN
-        CREATE POLICY "Public can read group members" ON public.group_generation_members FOR SELECT USING (true);
-    END IF;
-END $$;
-
-CREATE POLICY "Public can view saved class groups" ON public.saved_class_groups FOR SELECT USING (true);
-CREATE POLICY "Public can insert saved class groups" ON public.saved_class_groups FOR INSERT WITH CHECK (true);
-CREATE POLICY "Public can delete saved class groups" ON public.saved_class_groups FOR DELETE USING (true);
-
--- ====================================================================
--- 14. TABLE PRIVILEGE HARDENING (GRANT / REVOKE)
--- ====================================================================
-DO $$
-DECLARE
-    t TEXT;
-    read_only_tables TEXT[] := ARRAY[
-        'students', 'classroom_layouts', 'seats', 'seating_periods',
-        'seating_assignments', 'reroll_history', 'app_settings',
-        'group_generations', 'group_generation_members'
-    ];
-    strict_lockdown_tables TEXT[] := ARRAY[
-        'admin_security', 'admin_sessions', 'admin_audit_logs',
-        'admin_profiles', 'admin_invitations', 'audit_logs'
-    ];
-BEGIN
-    FOREACH t IN ARRAY read_only_tables LOOP
-        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
-            EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON public.%I FROM anon, authenticated;', t);
-            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC;', t);
-            EXECUTE format('GRANT SELECT ON public.%I TO anon, authenticated, postgres, service_role;', t);
-        END IF;
-    END LOOP;
-
-    FOREACH t IN ARRAY strict_lockdown_tables LOOP
-        IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
-            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC, anon, authenticated;', t);
-            EXECUTE format('GRANT ALL ON public.%I TO postgres, service_role;', t);
-        END IF;
-    END LOOP;
-
-    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'saved_class_groups') THEN
-        EXECUTE 'REVOKE UPDATE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;';
-        EXECUTE 'REVOKE ALL ON public.saved_class_groups FROM PUBLIC;';
-        EXECUTE 'GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated, postgres, service_role;';
-    END IF;
-END $$;
-
--- ====================================================================
--- 15. DYNAMIC SEARCH_PATH CONFIGURATION FOR PGCRYPTO FUNCTIONS
--- ====================================================================
-DO $$
-DECLARE
-    v_ext_schema TEXT;
-    func_record RECORD;
-BEGIN
-    SELECT n.nspname INTO v_ext_schema
-    FROM pg_extension e
-    JOIN pg_namespace n ON e.extnamespace = n.oid
-    WHERE e.extname = 'pgcrypto';
-
-    IF v_ext_schema IS NULL THEN
-        v_ext_schema := 'public';
-    END IF;
-
-    FOR func_record IN (
-        SELECT p.oid::regprocedure AS signature
-        FROM pg_proc p
-        JOIN pg_namespace n ON p.pronamespace = n.oid
-        WHERE n.nspname = 'public'
-          AND p.proname IN (
-              'is_valid_admin_session',
-              'is_admin',
-              'is_owner',
-              'cron_execute_weekly_reroll',
-              'execute_seating_reroll',
-              'get_active_seating',
-              'admin_manage_student',
-              'admin_save_layout',
-              'admin_verify_password',
-              'admin_verify_session',
-              'admin_change_password',
-              'admin_logout',
-              'server_provision_admin_password'
-          )
-    ) LOOP
-        EXECUTE format('ALTER FUNCTION %s SET search_path = public, %I;', func_record.signature, v_ext_schema);
-    END LOOP;
-END $$;
-
--- ====================================================================
--- 16. REALTIME PUBLICATION
--- ====================================================================
+-- 6. ROW LEVEL SECURITY & POLICIES
+ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.classroom_layouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.seats ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.seating_periods ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.seating_assignments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reroll_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.saved_class_groups ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public students access" ON public.students FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Public layouts access" ON public.classroom_layouts FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Public seats access" ON public.seats FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Public seating_periods access" ON public.seating_periods FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Public seating_assignments access" ON public.seating_assignments FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Public reroll_history access" ON public.reroll_history FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Public saved_class_groups select" ON public.saved_class_groups FOR SELECT USING (true);
+CREATE POLICY "Public saved_class_groups insert" ON public.saved_class_groups FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public saved_class_groups delete" ON public.saved_class_groups FOR DELETE USING (true);
+
+-- 7. TABLE GRANTS
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.students TO anon, authenticated, postgres, service_role;
+GRANT SELECT, UPDATE ON public.classroom_layouts TO anon, authenticated, postgres, service_role;
+GRANT SELECT, UPDATE ON public.seats TO anon, authenticated, postgres, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.seating_periods TO anon, authenticated, postgres, service_role;
+GRANT SELECT, INSERT, DELETE ON public.seating_assignments TO anon, authenticated, postgres, service_role;
+GRANT SELECT, INSERT, DELETE ON public.reroll_history TO anon, authenticated, postgres, service_role;
+GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated, postgres, service_role;
+REVOKE UPDATE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;
+
+-- 8. REALTIME PUBLICATION
 DO $$
 BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.seating_periods;
@@ -1213,9 +437,7 @@ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.saved_class_groups;
 EXCEPTION WHEN OTHERS THEN END $$;
 
--- ====================================================================
--- 17. SEED DATA (SAFE IF NOT ALREADY POPULATED)
--- ====================================================================
+-- 9. SEED DATA (26 STUDENTS & STANDARD 3-BLOCK LAYOUT)
 INSERT INTO public.students (number, full_name, nickname, is_active)
 VALUES
 (1, 'ABIMANYU PUTRA PRIANDANA', 'Bimbim', true),
@@ -1283,7 +505,7 @@ VALUES
 ('00000000-0000-0000-0000-000000000001', 'block-right', 'Blok Kanan', '28', 3, 1, true, true)
 ON CONFLICT (layout_id, seat_code) DO NOTHING;
 
--- Trigger initial seating layout via trusted engine if no active period exists
+-- Initial seating layout if no active period exists
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM public.seating_periods WHERE status = 'active') THEN
@@ -1291,22 +513,12 @@ BEGIN
     END IF;
 END $$;
 
--- ====================================================================
--- 18. CRON SCHEDULER REGISTRATION
--- ====================================================================
+-- 10. CRON SCHEDULER REGISTRATION
 DO $$
 DECLARE
     v_jobid BIGINT;
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
-        BEGIN
-            PERFORM cron.unschedule('classrolling-weekly-reroll');
-        EXCEPTION WHEN OTHERS THEN END;
-
-        BEGIN
-            PERFORM cron.unschedule('seatflow-weekly-reroll');
-        EXCEPTION WHEN OTHERS THEN END;
-
         BEGIN
             FOR v_jobid IN (
                 SELECT jobid FROM cron.job 
@@ -1315,18 +527,13 @@ BEGIN
                 PERFORM cron.unschedule(v_jobid);
             END LOOP;
         EXCEPTION WHEN OTHERS THEN END;
-    END IF;
-END $$;
 
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
-        PERFORM cron.schedule(
-            'classrolling-weekly-reroll',
-            '0 23 * * 6', -- 23:00 UTC Saturday = 06:00 WIB Sunday
-            'SELECT public.cron_execute_weekly_reroll();'
-        );
+        BEGIN
+            PERFORM cron.schedule(
+                'classrolling-weekly-reroll',
+                '0 23 * * 6', -- 23:00 UTC Saturday = 06:00 WIB Sunday
+                'SELECT public.cron_execute_weekly_reroll();'
+            );
+        EXCEPTION WHEN OTHERS THEN END;
     END IF;
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'pg_cron schedule could not be registered automatically: %', SQLERRM;
 END $$;

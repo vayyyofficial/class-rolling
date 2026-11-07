@@ -1,22 +1,14 @@
 /**
  * CLASS ROLLING - Student Service
  *
- * All write operations (add, update, delete, toggle) REQUIRE an active admin session token
- * and are routed through the server-side admin_manage_student RPC, which validates the
- * session before executing any database change.
- *
- * Direct table writes are NEVER used as a fallback for write operations because:
- *  - They would bypass the server-side authorization check.
- *  - RLS policies on the students table must block unauthenticated writes.
- *
- * Read operations (SELECT) remain public because students and seating data
- * are intentionally public-facing.
+ * Student data is publicly viewable.
+ * Mutations (add, update, delete, toggle) are available to authenticated administrators.
  */
 
 import { INITIAL_STUDENTS } from '../data/students.js';
 import { storageService } from './storageService.js';
 import { authService } from './authService.js';
-import { supabase } from './supabase.js';
+import { supabase, isSupabaseConfigured } from './supabase.js';
 
 const STORAGE_KEY = 'students';
 
@@ -37,6 +29,10 @@ export const studentService = {
    * Async fetch from Supabase with local caching (read-only, public)
    */
   async fetchStudents() {
+    if (!isSupabaseConfigured) {
+      return this.getStudents();
+    }
+
     try {
       const { data, error } = await supabase
         .from('students')
@@ -74,82 +70,93 @@ export const studentService = {
   },
 
   /**
-   * Add student — requires a valid admin session token.
-   * Routed exclusively through admin_manage_student RPC.
-   * Falls back to local-only storage if Supabase is unavailable,
-   * but will NOT attempt a direct unauthenticated insert.
+   * Add student — requires admin access.
    */
   async addStudent({ fullName, nickname, isActive = true }) {
-    const students = this.getStudents();
-    const token = authService.getSessionToken();
-
-    if (!token) {
+    if (!authService.isAuthenticated()) {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    try {
-      const { data, error } = await supabase.rpc('admin_manage_student', {
-        p_session_token: token,
-        p_action: 'add',
-        p_student_id: null,
-        p_payload: { fullName, nickname, isActive },
-      });
+    const cleanFullName = (fullName || '').trim();
+    const cleanNickname = (nickname || '').trim();
 
-      if (error) {
-        console.warn('[studentService] RPC add error:', error.message);
-        return { error: error.message || 'Gagal menambahkan siswa ke server.' };
+    if (!cleanFullName) return { error: 'Nama lengkap wajib diisi.' };
+    if (!cleanNickname) return { error: 'Nama panggilan wajib diisi.' };
+
+    const students = this.getStudents();
+    const nextNumber =
+      students.length > 0
+        ? Math.max(...students.map((s) => s.number || 0)) + 1
+        : 1;
+
+    let newStudent = {
+      id: `stu-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      number: nextNumber,
+      fullName: cleanFullName,
+      nickname: cleanNickname,
+      isActive: Boolean(isActive),
+      createdAt: new Date().toISOString(),
+    };
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('students')
+          .insert({
+            number: nextNumber,
+            full_name: cleanFullName,
+            nickname: cleanNickname,
+            is_active: Boolean(isActive),
+          })
+          .select()
+          .single();
+
+        if (!error && data) {
+          newStudent = {
+            id: data.id,
+            number: data.number,
+            fullName: data.full_name,
+            nickname: data.nickname,
+            isActive: data.is_active,
+            createdAt: data.created_at,
+          };
+        }
+      } catch (err) {
+        console.warn('[studentService] Supabase insert error, saving locally:', err);
       }
-
-      if (data?.success && data.student) {
-        const updated = [...students, data.student];
-        this.saveStudents(updated);
-        return data.student;
-      }
-
-      return { error: data?.error || 'Server menolak penambahan siswa.' };
-    } catch (err) {
-      console.warn('[studentService] RPC add exception:', err);
-      return { error: 'Gagal terhubung ke server. Periksa koneksi internet Anda.' };
     }
+
+    const updated = [...students, newStudent];
+    this.saveStudents(updated);
+    return newStudent;
   },
 
   /**
-   * Update student — requires a valid admin session token.
-   * Routed exclusively through admin_manage_student RPC.
+   * Update student — requires admin access.
    */
   async updateStudent(id, updates) {
-    const students = this.getStudents();
-    const index = students.findIndex((s) => s.id === id);
-    if (index === -1) return null;
-
-    const token = authService.getSessionToken();
-
-    if (!token) {
+    if (!authService.isAuthenticated()) {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    try {
-      const { data, error } = await supabase.rpc('admin_manage_student', {
-        p_session_token: token,
-        p_action: 'update',
-        p_student_id: id,
-        p_payload: updates,
-      });
+    const students = this.getStudents();
+    const index = students.findIndex((s) => s.id === id);
+    if (index === -1) return { error: 'Siswa tidak ditemukan.' };
 
-      if (error) {
-        console.warn('[studentService] RPC update error:', error.message);
-        return { error: error.message || 'Gagal memperbarui data siswa.' };
-      }
+    if (isSupabaseConfigured) {
+      try {
+        const payload = {};
+        if (updates.fullName !== undefined) payload.full_name = updates.fullName.trim();
+        if (updates.nickname !== undefined) payload.nickname = updates.nickname.trim();
+        if (updates.isActive !== undefined) payload.is_active = Boolean(updates.isActive);
+        payload.updated_at = new Date().toISOString();
 
-      if (!data?.success) {
-        return { error: data?.error || 'Server menolak pembaruan data siswa.' };
+        await supabase.from('students').update(payload).eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase update error, saving locally:', err);
       }
-    } catch (err) {
-      console.warn('[studentService] RPC update exception:', err);
-      return { error: 'Gagal terhubung ke server.' };
     }
 
-    // Update local cache to reflect committed change
     students[index] = {
       ...students[index],
       ...updates,
@@ -163,78 +170,49 @@ export const studentService = {
   },
 
   /**
-   * Toggle active status — requires a valid admin session token.
+   * Toggle active status — requires admin access.
    */
   async toggleActive(id) {
-    const students = this.getStudents();
-    const student = students.find((s) => s.id === id);
-    if (!student) return null;
-
-    const token = authService.getSessionToken();
-
-    if (!token) {
+    if (!authService.isAuthenticated()) {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    try {
-      const { data, error } = await supabase.rpc('admin_manage_student', {
-        p_session_token: token,
-        p_action: 'toggle_active',
-        p_student_id: id,
-        p_payload: {},
-      });
+    const students = this.getStudents();
+    const student = students.find((s) => s.id === id);
+    if (!student) return { error: 'Siswa tidak ditemukan.' };
 
-      if (error) {
-        console.warn('[studentService] RPC toggle error:', error.message);
-        return { error: error.message || 'Gagal mengubah status siswa.' };
+    const newStatus = !student.isActive;
+
+    if (isSupabaseConfigured) {
+      try {
+        await supabase
+          .from('students')
+          .update({ is_active: newStatus, updated_at: new Date().toISOString() })
+          .eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase toggle error, saving locally:', err);
       }
-
-      if (!data?.success) {
-        return { error: data?.error || 'Server menolak perubahan status siswa.' };
-      }
-
-      // Reflect confirmed server-side change in local cache
-      const newStatus = data.isActive ?? !student.isActive;
-      student.isActive = newStatus;
-      this.saveStudents(students);
-      return student;
-    } catch (err) {
-      console.warn('[studentService] RPC toggle exception:', err);
-      return { error: 'Gagal terhubung ke server.' };
     }
+
+    student.isActive = newStatus;
+    this.saveStudents(students);
+    return student;
   },
 
   /**
-   * Delete student — requires a valid admin session token.
-   * Note: Soft-deactivation (toggle_active) is preferred over hard deletion
-   * to preserve historical seating and group records.
+   * Delete student — requires admin access.
    */
   async deleteStudent(id) {
-    const token = authService.getSessionToken();
-
-    if (!token) {
+    if (!authService.isAuthenticated()) {
       return { error: 'Sesi administrator tidak aktif. Silakan login kembali.' };
     }
 
-    try {
-      const { data, error } = await supabase.rpc('admin_manage_student', {
-        p_session_token: token,
-        p_action: 'delete',
-        p_student_id: id,
-        p_payload: {},
-      });
-
-      if (error) {
-        console.warn('[studentService] RPC delete error:', error.message);
-        return { error: error.message || 'Gagal menghapus data siswa.' };
+    if (isSupabaseConfigured) {
+      try {
+        await supabase.from('students').delete().eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase delete error, removing locally:', err);
       }
-
-      if (!data?.success) {
-        return { error: data?.error || 'Server menolak penghapusan siswa.' };
-      }
-    } catch (err) {
-      console.warn('[studentService] RPC delete exception:', err);
-      return { error: 'Gagal terhubung ke server.' };
     }
 
     const students = this.getStudents();

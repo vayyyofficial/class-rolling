@@ -7,7 +7,6 @@ import {
   EyeOff,
   ArrowLeft,
   AlertCircle,
-  Clock,
 } from 'lucide-react';
 
 const CURRENT_YEAR = 2026;
@@ -16,9 +15,6 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [isLocked, setIsLocked] = useState(false);
-  const [remainingSeconds, setRemainingSeconds] = useState(0);
-  const [remainingAttempts, setRemainingAttempts] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e) => {
@@ -40,13 +36,6 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
         onLoginSuccess(result.user);
       } else {
         setError(result.message || 'Kata sandi tidak valid.');
-        if (result.locked) {
-          setIsLocked(true);
-          setRemainingSeconds(result.remainingSeconds || 900);
-        }
-        if (result.remainingAttempts !== undefined) {
-          setRemainingAttempts(result.remainingAttempts);
-        }
       }
     } catch (err) {
       setIsLoading(false);
@@ -80,36 +69,17 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
           </p>
         </div>
 
-        {/* Lockout Banner */}
-        {isLocked && (
-          <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5 text-amber-900 text-xs">
-            <Clock className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <strong className="block font-semibold">Akses Terkunci Sementara</strong>
-              <span>
-                Terlalu banyak percobaan gagal berturut-turut. Demi keamanan kelas, sistem mengunci akses selama{' '}
-                {Math.ceil(remainingSeconds / 60)} menit.
-              </span>
-            </div>
-          </div>
-        )}
-
         {/* Error Alert */}
-        {error && !isLocked && (
+        {error && (
           <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-rose-900 text-xs">
             <AlertCircle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
               <span>{error}</span>
-              {remainingAttempts !== null && remainingAttempts < 5 && (
-                <div className="mt-1 font-semibold text-rose-700">
-                  Percobaan tersisa sebelum akun dikunci: {remainingAttempts}
-                </div>
-              )}
             </div>
           </div>
         )}
 
-        {/* Form - Password ONLY */}
+        {/* Form - Password */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label className="text-xs font-semibold text-content-primary block mb-1">
@@ -123,7 +93,7 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Masukkan kata sandi admin"
                 autoComplete="current-password"
-                disabled={isLoading || isLocked}
+                disabled={isLoading}
                 className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-divider bg-canvas text-xs text-content-primary focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 disabled:opacity-50"
               />
               <button
@@ -139,17 +109,16 @@ export default function AdminLoginPage({ onLoginSuccess, onBackToPublic }) {
 
           <button
             type="submit"
-            disabled={isLoading || isLocked || !password}
+            disabled={isLoading || !password}
             className="w-full py-2.5 px-4 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold shadow-subtle transition-all transform active:scale-95 disabled:opacity-50 mt-2"
           >
             {isLoading ? 'Memverifikasi...' : 'Masuk ke Dashboard'}
           </button>
         </form>
 
-        {/* Security Notice */}
         <div className="mt-6 pt-5 border-t border-divider text-center">
           <p className="text-[11px] text-content-secondary leading-relaxed">
-            Dilindungi enkripsi Bcrypt tingkat server & perlindungan otomatis terhadap serangan brute-force.
+            Hanya dapat diakses oleh ketua kelas atau pengurus yang memiliki otorisasi.
           </p>
         </div>
       </div>

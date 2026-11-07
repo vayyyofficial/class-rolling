@@ -3,40 +3,26 @@
 -- Migration: 20261107000002_security_hardening.sql
 --
 -- REVIEWS & HARDENING PERFORMED:
---   1. Dynamic pgcrypto schema verification: Discovers exact schema of pgcrypto
---      via pg_extension without hardcoding/guessing, ensuring digest(), crypt(),
---      gen_salt(), and gen_random_bytes() execute reliably under search_path.
---   2. Strict security for audit_logs & admin_audit_logs: Enables RLS and REVOKES
---      all direct access from anon, authenticated, and PUBLIC.
---   3. Dynamic pg_policies audit: Queries pg_policies to systematically drop
---      all legacy/obsolete write policies on sensitive tables (including saved_class_groups),
---      preventing accidental OR-combination authorization bypasses.
---   4. Function privilege audit: REVOKES execution from PUBLIC on all internal
---      functions, grants execution strictly to postgres/service_role for internal
---      routines, and grants anon/authenticated only to necessary public RPCs.
---   5. Target verification in admin_manage_student() & admin_save_layout():
---      Verifies that target row exists (FOUND); returns error if not found and
---      prevents phantom admin_audit_logs creation.
---   6. Trusted database worker: cron_execute_weekly_reroll() runs as postgres/service_role
---      without requiring browser token or service_role key in frontend.
---   7. Browser lockout from cron: cron_execute_weekly_reroll() revoked from anon & authenticated.
---   8. Safe migration: No destructive DROP CASCADE, no table drops, no data loss.
---   9. Object dependency safety: Retains public.is_owner() and public.is_admin()
---      safely locked down to postgres/service_role without dropping, avoiding dependency failures.
---  10. Session token hashing compatibility: All authentication and validation routines
---      use identical encode(digest(token::bytea, 'sha256'), 'hex') so active sessions
---      remain 100% valid.
---  11. Table existence checks: All optional/legacy tables (admin_invitations, admin_profiles,
---      audit_logs, group_generations, etc.) are validated via pg_tables before ALTER/REVOKE.
---  12. Strict write lock on saved_class_groups: Prohibits UPDATE via RLS & table privileges
---      while preserving SELECT, INSERT, and DELETE for classroom randomizer features.
+--   1. Dynamic pgcrypto schema verification via pg_extension.
+--   2. Strict security for audit_logs & admin_audit_logs.
+--   3. Dynamic pg_policies audit including saved_class_groups.
+--   4. Function privilege audit with strict grant/revoke.
+--   5. Target verification in admin_manage_student() & admin_save_layout().
+--   6. Trusted database worker: cron_execute_weekly_reroll().
+--   7. Browser lockout from cron function.
+--   8. Safe migration: No table drops, no data loss, no password reset.
+--   9. Object dependency safety: is_owner() and is_admin() retained safely.
+--  10. Session token hashing compatibility across all auth functions.
+--  11. Table existence checks for optional/legacy tables.
+--  12. Strict write lock on saved_class_groups (no UPDATE).
+--  13. Duplicate weekly rotation prevention via advisory lock.
+--  14. Table-level privilege hardening: REVOKE ALL then GRANT SELECT.
 -- ====================================================================
 
 -- ====================================================================
 -- 1. EXTENSIONS & PGCRYPTO SCHEMA DISCOVERY
 -- ====================================================================
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "pg_cron";
 
 -- Discover or initialize pgcrypto in appropriate schema
 DO $$
@@ -58,10 +44,10 @@ BEGIN
 END $$;
 
 -- ====================================================================
--- 2. SAFE MANAGEMENT OF LEGACY OVERLOADS & FUNCTIONS (NO DEPENDENCY ERRORS)
+-- 2. SAFE MANAGEMENT OF LEGACY OVERLOADS & FUNCTIONS
 -- ====================================================================
 
--- Safely remove obsolete overloads of execute_seating_reroll that lack session token
+-- Remove obsolete execute_seating_reroll overloads that lack session token
 DO $$
 DECLARE
     r RECORD;
@@ -72,14 +58,13 @@ BEGIN
         JOIN pg_namespace n ON p.pronamespace = n.oid
         WHERE n.nspname = 'public'
           AND p.proname = 'execute_seating_reroll'
-          AND p.oid::regprocedure::text != 'public.execute_seating_reroll(text,text,uuid,text)'::regprocedure::text
+          AND array_length(p.proargtypes, 1) IS DISTINCT FROM 4
     ) LOOP
-        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_signature || ';';
+        EXECUTE 'DROP FUNCTION IF EXISTS ' || r.func_signature;
     END LOOP;
 END $$;
 
--- Retain public.is_owner() safely to prevent dependency failures with legacy policies/views.
--- Strict lockdown: revoked from PUBLIC/anon/authenticated; returns false.
+-- Retain public.is_owner() safely to prevent dependency failures
 CREATE OR REPLACE FUNCTION public.is_owner()
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -97,7 +82,7 @@ REVOKE ALL ON FUNCTION public.is_owner() FROM anon;
 REVOKE ALL ON FUNCTION public.is_owner() FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.is_owner() TO postgres, service_role;
 
--- Retain 0-argument public.is_admin() for backward compatibility with legacy objects
+-- Retain 0-argument public.is_admin() for backward compatibility
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN
 LANGUAGE plpgsql
@@ -116,7 +101,7 @@ REVOKE ALL ON FUNCTION public.is_admin() FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.is_admin() TO postgres, service_role;
 
 -- ====================================================================
--- 3. INTERNAL SESSION VALIDATION HELPER (DYNAMICALLY BOUND TO PGCRYPTO SCHEMA)
+-- 3. INTERNAL SESSION VALIDATION HELPER (DYNAMICALLY BOUND)
 -- ====================================================================
 DO $$
 DECLARE
@@ -187,6 +172,11 @@ GRANT EXECUTE ON FUNCTION public.is_admin(TEXT) TO postgres, service_role;
 -- 4. PRIVATE CRON ROTATION FUNCTION (TRUSTED DATABASE ENGINE ONLY)
 --    Used exclusively by pg_cron every Sunday at 06:00 WIB (23:00 UTC Sat).
 --    Cannot be called by anon or authenticated web roles.
+--
+--    DUPLICATE PREVENTION:
+--    Uses pg_advisory_xact_lock to prevent concurrent execution, and checks
+--    whether an automatic reroll for this weekly cycle already exists before
+--    performing any mutations.
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.cron_execute_weekly_reroll()
 RETURNS JSONB
@@ -205,7 +195,11 @@ DECLARE
     v_wib_dow INT;
     v_days_back INT;
     v_cycle_start DATE;
+    v_existing_period_id UUID;
 BEGIN
+    -- Advisory lock prevents concurrent execution (key chosen from hash of function name)
+    PERFORM pg_advisory_xact_lock(hashtext('cron_execute_weekly_reroll'));
+
     v_wib_now := v_now AT TIME ZONE 'Asia/Jakarta';
     v_wib_dow := EXTRACT(DOW FROM v_wib_now)::INT; -- 0 = Sunday
 
@@ -218,6 +212,22 @@ BEGIN
 
     v_cycle_start := v_wib_now::DATE - v_days_back;
     v_cycle_id := 'CYCLE-' || to_char(v_cycle_start, 'YYYY-MM-DD');
+
+    -- Check if this weekly cycle has already been completed by an automatic reroll
+    SELECT id INTO v_existing_period_id
+    FROM public.seating_periods
+    WHERE cycle_id = v_cycle_id;
+
+    IF v_existing_period_id IS NOT NULL THEN
+        -- This cycle already has a seating period — do not re-shuffle
+        RETURN jsonb_build_object(
+            'success', true,
+            'skipped', true,
+            'reason', 'Rotasi untuk siklus ini sudah ada.',
+            'cycle_id', v_cycle_id,
+            'existing_period_id', v_existing_period_id
+        );
+    END IF;
 
     SELECT id INTO v_layout_id FROM public.classroom_layouts WHERE is_active = true LIMIT 1;
     IF v_layout_id IS NULL THEN
@@ -241,13 +251,7 @@ BEGIN
 
     INSERT INTO public.seating_periods (cycle_id, layout_id, status, roll_type)
     VALUES (v_cycle_id, v_layout_id, 'active', 'automatic')
-    ON CONFLICT (cycle_id) DO UPDATE SET
-        status = 'active',
-        layout_id = EXCLUDED.layout_id,
-        roll_type = 'automatic'
     RETURNING id INTO v_period_id;
-
-    DELETE FROM public.seating_assignments WHERE period_id = v_period_id;
 
     WITH shuffled_students AS (
         SELECT id, ROW_NUMBER() OVER (ORDER BY gen_random_uuid()) AS rn
@@ -280,6 +284,7 @@ BEGIN
 
     RETURN jsonb_build_object(
         'success', true,
+        'skipped', false,
         'period_id', v_period_id,
         'cycle_id', v_cycle_id,
         'student_count', v_student_count,
@@ -423,7 +428,6 @@ GRANT EXECUTE ON FUNCTION public.execute_seating_reroll(TEXT, TEXT, UUID, TEXT) 
 
 -- ====================================================================
 -- 6. PUBLIC RPC: GET ACTIVE SEATING
---    assignments shape: { [seat_id]: student_id }
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.get_active_seating()
 RETURNS JSONB
@@ -478,7 +482,7 @@ REVOKE ALL ON FUNCTION public.get_active_seating() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_active_seating() TO anon, authenticated, service_role;
 
 -- ====================================================================
--- 7. PRIVILEGED STUDENT MANAGEMENT RPC (WITH TARGET EXISTENCE VERIFICATION)
+-- 7. PRIVILEGED STUDENT MANAGEMENT RPC
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.admin_manage_student(
     p_session_token TEXT,
@@ -548,7 +552,6 @@ BEGIN
         WHERE id = p_student_id
         RETURNING * INTO v_new_student;
 
-        -- Verify row was actually found and updated
         IF NOT FOUND OR v_new_student.id IS NULL THEN
             RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
         END IF;
@@ -579,7 +582,6 @@ BEGIN
         WHERE id = p_student_id
         RETURNING * INTO v_new_student;
 
-        -- Verify row was actually found and updated
         IF NOT FOUND OR v_new_student.id IS NULL THEN
             RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
         END IF;
@@ -599,7 +601,6 @@ BEGIN
             updated_at = now()
         WHERE id = p_student_id;
 
-        -- Verify target existed
         IF NOT FOUND THEN
             RETURN jsonb_build_object('success', false, 'error', 'Data siswa tidak ditemukan.');
         END IF;
@@ -618,7 +619,7 @@ REVOKE ALL ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) FROM
 GRANT EXECUTE ON FUNCTION public.admin_manage_student(TEXT, TEXT, UUID, JSONB) TO anon, authenticated, service_role;
 
 -- ====================================================================
--- 8. PRIVILEGED LAYOUT MANAGEMENT RPC (WITH TARGET EXISTENCE VERIFICATION)
+-- 8. PRIVILEGED LAYOUT MANAGEMENT RPC
 -- ====================================================================
 CREATE OR REPLACE FUNCTION public.admin_save_layout(
     p_session_token TEXT,
@@ -648,7 +649,6 @@ BEGIN
         updated_at = now()
     WHERE id = p_layout_id;
 
-    -- Verify layout record actually existed and was updated
     IF NOT FOUND THEN
         RETURN jsonb_build_object('success', false, 'error', 'Data tata letak kelas tidak ditemukan.');
     END IF;
@@ -664,8 +664,7 @@ REVOKE ALL ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) FR
 GRANT EXECUTE ON FUNCTION public.admin_save_layout(TEXT, UUID, TEXT, TEXT, TEXT) TO anon, authenticated, service_role;
 
 -- ====================================================================
--- 9. AUTHENTICATION RPCs (UNIFIED COMPATIBILITY & DYNAMIC PGCRYPTO BINDING)
---    Uses identical encode(digest(token::bytea, 'sha256'), 'hex') across all functions
+-- 9. AUTHENTICATION RPCs (DYNAMIC PGCRYPTO BINDING)
 -- ====================================================================
 DO $$
 DECLARE
@@ -948,16 +947,13 @@ GRANT EXECUTE ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) TO anon
 REVOKE ALL ON FUNCTION public.admin_logout(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.admin_logout(TEXT) TO anon, authenticated, service_role;
 
--- Strict protection of password provisioning: postgres & service_role only
 REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM anon;
 REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authenticated;
 GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres, service_role;
 
 -- ====================================================================
--- 10. DYNAMIC PG_POLICIES AUDIT & CLEANUP (INCLUDES saved_class_groups)
---     Queries pg_policies directly to systematically drop all legacy write/ALL
---     and SELECT policies on all sensitive and managed tables.
+-- 10. DYNAMIC PG_POLICIES AUDIT & CLEANUP
 -- ====================================================================
 DO $$
 DECLARE
@@ -968,21 +964,11 @@ BEGIN
         FROM pg_policies
         WHERE schemaname = 'public'
           AND tablename IN (
-              'students',
-              'classroom_layouts',
-              'seats',
-              'seating_periods',
-              'seating_assignments',
-              'reroll_history',
-              'app_settings',
-              'admin_profiles',
-              'admin_invitations',
-              'admin_security',
-              'admin_sessions',
-              'admin_audit_logs',
-              'audit_logs',
-              'group_generations',
-              'group_generation_members',
+              'students', 'classroom_layouts', 'seats',
+              'seating_periods', 'seating_assignments', 'reroll_history',
+              'app_settings', 'admin_profiles', 'admin_invitations',
+              'admin_security', 'admin_sessions', 'admin_audit_logs',
+              'audit_logs', 'group_generations', 'group_generation_members',
               'saved_class_groups'
           )
           AND cmd IN ('INSERT', 'UPDATE', 'DELETE', 'ALL')
@@ -991,7 +977,6 @@ BEGIN
     END LOOP;
 END $$;
 
--- Drop legacy SELECT policies on public tables to prepare clean replacement
 DO $$
 DECLARE
     r RECORD;
@@ -1001,21 +986,11 @@ BEGIN
         FROM pg_policies
         WHERE schemaname = 'public'
           AND tablename IN (
-              'students',
-              'classroom_layouts',
-              'seats',
-              'seating_periods',
-              'seating_assignments',
-              'reroll_history',
-              'app_settings',
-              'admin_profiles',
-              'admin_invitations',
-              'admin_security',
-              'admin_sessions',
-              'admin_audit_logs',
-              'audit_logs',
-              'group_generations',
-              'group_generation_members',
+              'students', 'classroom_layouts', 'seats',
+              'seating_periods', 'seating_assignments', 'reroll_history',
+              'app_settings', 'admin_profiles', 'admin_invitations',
+              'admin_security', 'admin_sessions', 'admin_audit_logs',
+              'audit_logs', 'group_generations', 'group_generation_members',
               'saved_class_groups'
           )
           AND cmd = 'SELECT'
@@ -1025,7 +1000,7 @@ BEGIN
 END $$;
 
 -- ====================================================================
--- 11. ENABLE ROW LEVEL SECURITY SAFELY VIA CATALOG VERIFICATION
+-- 11. ENABLE ROW LEVEL SECURITY VIA CATALOG VERIFICATION
 -- ====================================================================
 DO $$
 DECLARE
@@ -1046,7 +1021,7 @@ BEGIN
 END $$;
 
 -- ====================================================================
--- 12. CREATE CLEAN READ-ONLY POLICIES FOR PUBLIC CHARTS
+-- 12. CREATE CLEAN READ-ONLY POLICIES FOR PUBLIC DATA
 -- ====================================================================
 CREATE POLICY "Public can read students" ON public.students FOR SELECT USING (true);
 CREATE POLICY "Public can read layouts" ON public.classroom_layouts FOR SELECT USING (true);
@@ -1055,7 +1030,6 @@ CREATE POLICY "Public can read seating periods" ON public.seating_periods FOR SE
 CREATE POLICY "Public can read seating assignments" ON public.seating_assignments FOR SELECT USING (true);
 CREATE POLICY "Public can read reroll history" ON public.reroll_history FOR SELECT USING (true);
 
--- Optional tables policy creation (conditional on table existence)
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'app_settings') THEN
@@ -1069,20 +1043,15 @@ BEGIN
     END IF;
 END $$;
 
--- saved_class_groups: permits SELECT, INSERT, DELETE (utility for classroom randomizer).
--- UPDATE is strictly excluded.
+-- saved_class_groups: SELECT, INSERT, DELETE only. No UPDATE policy.
 CREATE POLICY "Public can view saved class groups" ON public.saved_class_groups FOR SELECT USING (true);
 CREATE POLICY "Public can insert saved class groups" ON public.saved_class_groups FOR INSERT WITH CHECK (true);
 CREATE POLICY "Public can delete saved class groups" ON public.saved_class_groups FOR DELETE USING (true);
 
--- Internal & security tables (admin_security, admin_sessions, admin_audit_logs, audit_logs, admin_profiles, admin_invitations)
--- have ZERO policies for anon/authenticated = complete RLS lockout
-
 -- ====================================================================
--- 13. TABLE-LEVEL PRIVILEGE HARDENING (GRANT / REVOKE)
---     Explicit table-level privilege revocation blocks direct unauthorized
---     browser writes before RLS is even evaluated.
---     Uses catalog checks so optional/legacy tables do not trigger errors.
+-- 13. TABLE-LEVEL PRIVILEGE HARDENING
+--     For read-only tables: REVOKE ALL from PUBLIC/anon/authenticated,
+--     then GRANT SELECT to anon/authenticated and ALL to postgres/service_role.
 -- ====================================================================
 DO $$
 DECLARE
@@ -1097,16 +1066,16 @@ DECLARE
         'admin_profiles', 'admin_invitations', 'audit_logs'
     ];
 BEGIN
-    -- Read-only tables for public/anon/authenticated
+    -- Read-only tables: revoke everything, then grant only SELECT
     FOREACH t IN ARRAY read_only_tables LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
-            EXECUTE format('REVOKE INSERT, UPDATE, DELETE ON public.%I FROM anon, authenticated;', t);
-            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC;', t);
-            EXECUTE format('GRANT SELECT ON public.%I TO anon, authenticated, postgres, service_role;', t);
+            EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC, anon, authenticated;', t);
+            EXECUTE format('GRANT SELECT ON public.%I TO anon, authenticated;', t);
+            EXECUTE format('GRANT ALL ON public.%I TO postgres, service_role;', t);
         END IF;
     END LOOP;
 
-    -- Strict lockdown tables (internal administrative/security only)
+    -- Strict lockdown tables: zero access for browser roles
     FOREACH t IN ARRAY strict_lockdown_tables LOOP
         IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = t) THEN
             EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC, anon, authenticated;', t);
@@ -1114,18 +1083,16 @@ BEGIN
         END IF;
     END LOOP;
 
-    -- saved_class_groups: SELECT, INSERT, DELETE granted; UPDATE explicitly revoked
+    -- saved_class_groups: SELECT, INSERT, DELETE only; no UPDATE
     IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'saved_class_groups') THEN
-        EXECUTE 'REVOKE UPDATE ON public.saved_class_groups FROM PUBLIC, anon, authenticated;';
-        EXECUTE 'REVOKE ALL ON public.saved_class_groups FROM PUBLIC;';
-        EXECUTE 'GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated, postgres, service_role;';
+        EXECUTE 'REVOKE ALL ON public.saved_class_groups FROM PUBLIC, anon, authenticated;';
+        EXECUTE 'GRANT SELECT, INSERT, DELETE ON public.saved_class_groups TO anon, authenticated;';
+        EXECUTE 'GRANT ALL ON public.saved_class_groups TO postgres, service_role;';
     END IF;
 END $$;
 
 -- ====================================================================
 -- 14. DYNAMIC SEARCH_PATH CONFIGURATION FOR ALL SECURITY DEFINER FUNCTIONS
---     Explicitly binds search_path of all routines to the verified schema
---     discovered in pg_extension.
 -- ====================================================================
 DO $$
 DECLARE
