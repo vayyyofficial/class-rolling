@@ -1,6 +1,7 @@
 import { storageService } from './storageService';
 import { layoutService } from './layoutService';
 import { studentService } from './studentService';
+import { authService } from './authService';
 import { generateSeatingArrangement } from '../utils/randomizer';
 import { getWeeklyCycleId } from '../utils/scheduler';
 import { formatWIBDateTime } from '../utils/timezone';
@@ -87,10 +88,12 @@ export const seatingService = {
     // Try Supabase RPC first
     try {
       const dbType = type === 'Otomatis' ? 'automatic' : type === 'Inisialisasi' ? 'initial' : 'manual';
+      const token = authService.getSessionToken();
       const { data, error } = await supabase.rpc('execute_seating_reroll', {
         p_roll_type: dbType,
         p_description: description || (type === 'Manual' ? 'Pengacakan Manual oleh Admin' : 'Pengacakan Otomatis Mingguan'),
         p_admin_id: adminId,
+        p_session_token: token,
       });
 
       if (!error && data?.success) {

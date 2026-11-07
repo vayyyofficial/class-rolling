@@ -7,6 +7,7 @@ import StudentManager from '../components/admin/StudentManager';
 import SeatingManager from '../components/admin/SeatingManager';
 import HistoryTable from '../components/admin/HistoryTable';
 import ScheduleManager from '../components/admin/ScheduleManager';
+import AdminSecurityManager from '../components/admin/AdminSecurityManager';
 
 export default function AdminDashboardPage({
   currentUser,
@@ -39,6 +40,7 @@ export default function AdminDashboardPage({
     seating: { title: 'Kelola Denah & Reroll', subtitle: 'Pratinjau visual susunan aktif dan lakukan pengacakan ulang manual' },
     history: { title: 'Riwayat Aktivitas Rotasi', subtitle: 'Log riwayat seluruh pengacakan otomatis dan manual' },
     schedule: { title: 'Pengaturan Jadwal Mingguan', subtitle: 'Parameter waktu Minggu 06:00 WIB dan simulasi siklus' },
+    security: { title: 'Keamanan Sandi Administrator', subtitle: 'Perbarui kata sandi admin dan lihat parameter proteksi server' },
   };
 
   const currentTabInfo = tabTitles[activeTab] || tabTitles.overview;
@@ -147,6 +149,10 @@ export default function AdminDashboardPage({
               onSimulateAutoReroll={onSimulateAutoReroll}
               showNotification={showNotification}
             />
+          )}
+
+          {activeTab === 'security' && (
+            <AdminSecurityManager showNotification={showNotification} />
           )}
         </main>
       </div>

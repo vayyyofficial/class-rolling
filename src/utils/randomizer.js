@@ -1,5 +1,5 @@
 /**
- * SEATFLOW - Fisher-Yates Randomization Engine
+ * RUANGKELAS - Fisher-Yates Randomization Engine
  * Unbiased seating shuffle and assignment algorithm
  */
 

@@ -1,145 +1,112 @@
-# SeatFlow — Class Seating Management & Group Randomizer
+# RuangKelas — Class Seating Management & Group Randomizer
 
-A modern, streamlined classroom utility designed specifically for a class of **26 students**. Built with React, Tailwind CSS, Vite, Supabase, and Vercel.
+Platform utilitas kelas modern dan profesional yang dirancang khusus untuk kelas berkapasitas **26 siswa**. Menampilkan dua fitur utama: **Denah Tempat Duduk Kelas** dengan rotasi otomatis mingguan dan **Group Randomizer** pembagi kelompok acak yang seimbang.
+
+Dibangun dengan React 19, Tailwind CSS, Vite, dan Supabase PostgreSQL.
 
 ---
 
-## 🌟 Main Features
+## 🌟 Fitur Utama
 
 1. **Denah Tempat Duduk Kelas (Visual Seating Chart)**
-   - 3 separate seating blocks: Left (10 seats), Middle (10 seats), Right (8 seats) = 28 total positions.
-   - Exactly 26 active students seated, leaving 2 designated empty seats at the back of the right block.
-   - Clear distinction between occupied, empty, and disabled seats.
-   - Interactive seat cards with student nicknames, full names, and search highlight.
+   - Denah 3 blok ruangan: Blok Kiri (10 kursi), Blok Tengah (10 kursi), Blok Kanan (8 kursi) = Total 28 posisi.
+   - Tepat 26 siswa aktif ditempatkan, menyisakan 2 kursi kosong teratur di baris belakang blok kanan.
+   - Pembedaan visual yang jelas antara kursi terisi, kursi kosong, dan status sorot siswa terpilih.
+   - Pemetaan nomor kursi nyata (`01`–`28`) tanpa mengekspos UUID database.
 
 2. **Group Randomizer (Pembagi Kelompok Acak)**
-   - Distributes all 26 students into balanced groups (2 to 26 groups).
-   - Balanced group breakdown (e.g. 4 groups = 7, 7, 6, 6 students).
-   - Fast & exciting randomization animation with confetti celebration.
-   - One-click **Salin Hasil (WhatsApp)** formatted cleanly for instant sharing.
-   - Permanent group history saved in the database.
+   - Membagi 26 siswa ke dalam kelompok seimbang (2 hingga 26 kelompok).
+   - Algoritma round-robin memastikan distribusi ukuran kelompok merata (contoh: 4 kelompok = 7, 7, 6, 6 siswa).
+   - Animasi pengacakan visual cepat dengan selebrasi konfeti.
+   - Fitur 1-klik **Salin Hasil (WhatsApp)** dengan format teks rapi siap dibagikan ke grup kelas.
 
-3. **Rotasi Otomatis Mingguan (Sunday 06:00 WIB)**
-   - Automatically randomizes seating every **Sunday at 06:00 WIB** (Saturday 23:00 UTC).
-   - Uses unbiased Fisher-Yates shuffle algorithm.
-   - Idempotent cycle ID (`CYCLE-YYYY-MM-DD`) prevents duplicate rolls.
-   - Stable seating throughout the week (no reshuffling on page refresh).
+3. **Rotasi Otomatis Mingguan (Minggu 06:00 WIB)**
+   - Pengacakan otomatis dieksekusi setiap **Minggu pukul 06:00 WIB** (Sabtu 23:00 UTC) via `pg_cron` dan sinkronisasi siklus.
+   - Algoritma Fisher-Yates (Knuth shuffle) adil tanpa bias.
+   - Siklus terkunci sepanjang pekan (denah stabil, tidak berubah saat refresh).
 
 4. **Acak Ulang Manual (Admin Reroll)**
-   - Allows administrators to manually trigger a seat reroll when requested by teachers or classroom needs.
-   - **Important Rule**: Manual rerolls never cancel or postpone the next scheduled Sunday 06:00 WIB roll.
-   - Smooth card shuffling animation and instant database persistence.
+   - Memungkinkan pengurus kelas mengacak ulang susunan jika ada instruksi khusus dari wali kelas/guru.
+   - Acak ulang manual tidak membatalkan atau menggeser jadwal rotasi otomatis Minggu 06:00 WIB berikutnya.
 
-5. **Multi-Role Administrator System (OWNER & ADMIN)**
-   - Powered by Supabase Auth with Row Level Security (RLS).
-   - Initial OWNER: `fairuzziachmad@gmail.com`.
-   - Subtle, discreet gear icon entry point in the header/footer (no loud "LOGIN ADMIN" banners).
+5. **Otentikasi Sandi Administrator (Password-Only Authentication)**
+   - Sistem login admin berbasis kata sandi tanpa input email atau username.
+   - Hashing kuat **Bcrypt** (cost 12 via `pgcrypto`) pada tingkat server database.
+   - Proteksi brute-force otomatis: maksimal 5 kali percobaan gagal sebelum akun terkunci selama 15 menit.
+   - Fitur ganti kata sandi mandiri di Panel Admin (wajib memverifikasi kata sandi saat ini).
+   - Prosedur pemulihan (recovery) aman melalui otorisasi server internal (`server_provision_admin_password`).
 
 ---
 
-## 🚀 Technology Stack
+## 🚀 Teknologi
 
 - **Frontend**: React 19, Vite, Tailwind CSS, Lucide Icons, Canvas Confetti
-- **Backend & Database**: Supabase (PostgreSQL, Row Level Security, Realtime, Auth, RPCs)
-- **Deployment**: Vercel (Edge Hosting & Serverless Cron)
-- **Timezone**: `Asia/Jakarta` (WIB / UTC+7)
+- **Backend & Database**: Supabase (PostgreSQL 15, Row Level Security, Realtime, RPCs, pgcrypto, pg_cron)
+- **Hosting Siap Pakai**: Netlify
+- **Zona Waktu**: `Asia/Jakarta` (WIB / UTC+7)
 
 ---
 
-## 🛠️ Getting Started Locally
+## 🛠️ Instalasi & Menjalankan Lokal
 
-### 1. Clone the repository
+### 1. Clone repositori
 ```bash
 git clone https://github.com/vayyyofficial/class-rolling.git
 cd class-rolling
 ```
 
-### 2. Install dependencies
+### 2. Pasang dependensi
 ```bash
 npm install
 ```
 
-### 3. Setup environment variables
-Copy `.env.example` to `.env`:
+### 3. Konfigurasi Environment Variables
+Salin `.env.example` ke `.env`:
 ```bash
 cp .env.example .env
 ```
-Fill in your Supabase project URL and publishable key:
+Isi konfigurasi Supabase Anda:
 ```env
 VITE_SUPABASE_URL=https://mhsxrfuyizcmdcfhmruu.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_VsdBt4QmNKtPteLAhjXTlQ_YT7hov_z
+VITE_APP_NAME=RuangKelas
+VITE_CLASS_SIZE=26
+VITE_TIMEZONE=Asia/Jakarta
 ```
 
-### 4. Run development server
+### 4. Jalankan Server Development
 ```bash
 npm run dev
 ```
 
 ---
 
-## 🗄️ Supabase Database Setup
+## 🗄️ Setup Database Supabase
 
-To provision all tables, Row Level Security policies, RPC functions, and the 26 student seed data:
+Jalankan skrip berikut di **Supabase SQL Editor**:
+1. `supabase/schema_complete.sql` (Skema lengkap tabel, data awal 26 siswa, tata letak 3 blok, dan RPCs).
+2. `supabase/migrations/20261107000000_password_auth.sql` (Sistem keamanan otentikasi sandi & audit logs).
 
-1. Open your [Supabase Dashboard](https://supabase.com/dashboard/project/mhsxrfuyizcmdcfhmruu).
-2. Go to the **SQL Editor**.
-3. Copy the contents of `supabase/schema_complete.sql` and run it.
-4. The database is now fully provisioned with:
-   - `students` (seeded with all 26 classmates)
-   - `classroom_layouts` & `seats` (28 positions across 3 blocks)
-   - `seating_periods` & `seating_assignments`
-   - `reroll_history` & `audit_logs`
-   - `group_generations` & `group_generation_members`
-   - `admin_profiles` & Initial OWNER auto-trigger (`fairuzziachmad@gmail.com`)
+### Inisialisasi / Reset Kata Sandi Admin (Server-Side Provisioning)
+Jalankan query ini di Supabase SQL Editor untuk menyetel kata sandi admin pertama kali atau memulihkannya:
+```sql
+SELECT public.server_provision_admin_password('KataSandiPilihanAnda2026!');
+```
 
 ---
 
-## ⏱️ Automatic Weekly Cron Schedule
+## 🌐 Panduan Deployment ke Netlify
 
-- **Schedule**: Every Sunday at 06:00 WIB
-- **UTC Schedule**: `0 23 * * 6` (Saturday 23:00 UTC)
-- Handled via:
-  1. **PostgreSQL `pg_cron`**: Scheduled job calling `execute_seating_reroll('automatic', ...)`
-  2. **Vercel Serverless Cron**: Triggering `/api/cron/weekly-reroll` according to `vercel.json`
+Proyek ini telah dikonfigurasi dengan file `netlify.toml` yang berisi:
+- Direktori publikasi: `dist`
+- Perintah build: `npm run build`
+- Aturan redirect SPA: `/* -> /index.html 200`
+- Header keamanan HTTP (X-Frame-Options, X-Content-Type-Options, dll.)
 
----
-
-## 👥 Class Roster (26 Siswa)
-
-| No | Nama Lengkap | Nama Panggilan |
-|---|---|---|
-| 1 | ABIMANYU PUTRA PRIANDANA | Bimbim |
-| 2 | ACHMAD YANUAR FAIRUZZI | Yova |
-| 3 | AHMAD YUSUF MAULANA | Yusuf Maulana |
-| 4 | AISYAHRAINA ZALUF FIRDAUSY | Syahrai |
-| 5 | ALANA MAHIRA HADI | Alana |
-| 6 | BALAKOSHA WAHYA PIRATHA | Ako / Balakosha |
-| 7 | CHRISTOPHER ADRIAN | Christo |
-| 8 | DYKSA ARTHA DEVASYA | Dyksa |
-| 9 | EL JALALUDDIN RUMI | El / Alul |
-| 10 | FAHMI MAULANA FIRDAUS | Fahmi |
-| 11 | JAVIER RADITHYA ALVRIYANTO | Javier |
-| 12 | JYO GHADI SUTALAKSONO | Jyo |
-| 13 | KEANU AZKA EVANO | Keanu |
-| 14 | MOHAMMAD AZZAM ABYNOVIC HIDAYAT | Azzam |
-| 15 | MOHAMMAD BARRA REFFAYA SUSANTO | Barra |
-| 16 | MUCHAMMAD YUSUF IBRAHIM FIRDAUS | Yusuf Ibrahim |
-| 17 | MUHAMMAD DIAZ AL-HAIDAR | Diaz |
-| 18 | MUHAMMAD GHATHFAN RAVIANSYAH | Affan |
-| 19 | MUHAMMAD SALMAN AL FARIZI | Faris |
-| 20 | NADA ARRAZZAQU PUTRI PUSPITA DARMAWAN | Nada |
-| 21 | RASHDAN GHIFFARY ALTAIR | Fary |
-| 22 | RIZAL JIDAN AL HAFIDZ | Rizal |
-| 23 | SITI AMALIYAH HASANAH | Amel |
-| 24 | STEFANIA ANDREA SINGGIH | Fania |
-| 25 | WILLIE SETIA BHAGASKARA | Willie |
-| 26 | XAVIER VERRILL ABDILLAH HERMAWANSYAH | Xavier |
-
----
-
-## 🔒 Security & Privacy
-
-- **Row Level Security (RLS)** is enabled on all tables.
-- Public visitors have read-only access to active seating and group results.
-- Sensitive administrative operations require authenticated `OWNER` or `ADMIN` roles.
-- No service role keys or secret credentials are ever committed to the repository or bundled into the client build.
+Untuk menghubungkan repositori ke Netlify:
+1. Hubungkan repositori GitHub `vayyyofficial/class-rolling` di Dashboard Netlify.
+2. Tambahkan Environment Variable di Netlify (`Site configuration` -> `Environment variables`):
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+   - `VITE_APP_NAME` (opsional: `RuangKelas`)
+3. Jalankan deploy.

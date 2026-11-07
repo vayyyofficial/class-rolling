@@ -1,5 +1,6 @@
 import { INITIAL_STUDENTS } from '../data/students';
 import { storageService } from './storageService';
+import { authService } from './authService';
 import { supabase } from './supabase';
 
 const STORAGE_KEY = 'students';
@@ -59,9 +60,30 @@ export const studentService = {
 
   async addStudent({ fullName, nickname, isActive = true }) {
     const students = this.getStudents();
-    const nextNumber = students.length > 0 ? Math.max(...students.map((s) => s.number || 0)) + 1 : 1;
+    const token = authService.getSessionToken();
 
-    // Try Supabase insert
+    // 1. Try secure admin_manage_student RPC
+    if (token) {
+      try {
+        const { data, error } = await supabase.rpc('admin_manage_student', {
+          p_session_token: token,
+          p_action: 'add',
+          p_student_id: null,
+          p_payload: { fullName, nickname, isActive },
+        });
+
+        if (!error && data?.success && data.student) {
+          const updated = [...students, data.student];
+          this.saveStudents(updated);
+          return data.student;
+        }
+      } catch (err) {
+        console.warn('[studentService] RPC add failed, falling back:', err);
+      }
+    }
+
+    // 2. Direct Supabase insert fallback
+    const nextNumber = students.length > 0 ? Math.max(...students.map((s) => s.number || 0)) + 1 : 1;
     try {
       const { data, error } = await supabase
         .from('students')
@@ -91,7 +113,7 @@ export const studentService = {
       console.warn('[studentService] Supabase insert failed, storing locally:', err);
     }
 
-    // Local fallback
+    // 3. Local fallback
     const newStudent = {
       id: `std-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
       number: nextNumber,
@@ -110,16 +132,36 @@ export const studentService = {
     const index = students.findIndex((s) => s.id === id);
     if (index === -1) return null;
 
-    // Try Supabase update if UUID
-    try {
-      const dbUpdates = {};
-      if (updates.fullName !== undefined) dbUpdates.full_name = updates.fullName.trim();
-      if (updates.nickname !== undefined) dbUpdates.nickname = updates.nickname.trim();
-      if (updates.isActive !== undefined) dbUpdates.is_active = Boolean(updates.isActive);
+    const token = authService.getSessionToken();
 
-      await supabase.from('students').update(dbUpdates).eq('id', id);
-    } catch (err) {
-      console.warn('[studentService] Supabase update failed:', err);
+    // 1. Try secure admin_manage_student RPC
+    if (token) {
+      try {
+        const { data, error } = await supabase.rpc('admin_manage_student', {
+          p_session_token: token,
+          p_action: 'update',
+          p_student_id: id,
+          p_payload: updates,
+        });
+
+        if (!error && data?.success) {
+          // Success on server
+        }
+      } catch (err) {
+        console.warn('[studentService] RPC update failed:', err);
+      }
+    } else {
+      // 2. Direct Supabase update fallback
+      try {
+        const dbUpdates = {};
+        if (updates.fullName !== undefined) dbUpdates.full_name = updates.fullName.trim();
+        if (updates.nickname !== undefined) dbUpdates.nickname = updates.nickname.trim();
+        if (updates.isActive !== undefined) dbUpdates.is_active = Boolean(updates.isActive);
+
+        await supabase.from('students').update(dbUpdates).eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase update failed:', err);
+      }
     }
 
     students[index] = {
@@ -140,10 +182,26 @@ export const studentService = {
     if (!student) return null;
     const newStatus = !student.isActive;
 
-    try {
-      await supabase.from('students').update({ is_active: newStatus }).eq('id', id);
-    } catch (err) {
-      console.warn('[studentService] Supabase toggleActive failed:', err);
+    const token = authService.getSessionToken();
+
+    // 1. Try secure admin_manage_student RPC
+    if (token) {
+      try {
+        await supabase.rpc('admin_manage_student', {
+          p_session_token: token,
+          p_action: 'toggle_active',
+          p_student_id: id,
+          p_payload: {},
+        });
+      } catch (err) {
+        console.warn('[studentService] RPC toggle failed:', err);
+      }
+    } else {
+      try {
+        await supabase.from('students').update({ is_active: newStatus }).eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase toggleActive failed:', err);
+      }
     }
 
     student.isActive = newStatus;
@@ -152,10 +210,25 @@ export const studentService = {
   },
 
   async deleteStudent(id) {
-    try {
-      await supabase.from('students').delete().eq('id', id);
-    } catch (err) {
-      console.warn('[studentService] Supabase delete failed:', err);
+    const token = authService.getSessionToken();
+
+    if (token) {
+      try {
+        await supabase.rpc('admin_manage_student', {
+          p_session_token: token,
+          p_action: 'delete',
+          p_student_id: id,
+          p_payload: {},
+        });
+      } catch (err) {
+        console.warn('[studentService] RPC delete failed:', err);
+      }
+    } else {
+      try {
+        await supabase.from('students').delete().eq('id', id);
+      } catch (err) {
+        console.warn('[studentService] Supabase delete failed:', err);
+      }
     }
 
     const students = this.getStudents();

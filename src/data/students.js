@@ -1,5 +1,5 @@
 /**
- * SEATFLOW - Initial Student Dataset
+ * RUANGKELAS - Initial Student Dataset
  * Exact 26 registered students with full names and nicknames.
  */
 export const INITIAL_STUDENTS = [

@@ -1,9 +1,10 @@
 /**
- * SEATFLOW - Storage Service
+ * RUANGKELAS - Storage Service
  * Abstraction layer for browser localStorage with memory fallback and error protection.
  */
 
-const STORAGE_PREFIX = 'seatflow_v1_';
+const STORAGE_PREFIX = 'ruangkelas_v1_';
+const LEGACY_PREFIX = 'seatflow_v1_';
 
 class MemoryStorage {
   constructor() {
@@ -40,7 +41,17 @@ try {
 export const storageService = {
   get(key, defaultValue = null) {
     try {
-      const serialized = backendStorage.getItem(STORAGE_PREFIX + key);
+      let serialized = backendStorage.getItem(STORAGE_PREFIX + key);
+
+      // Seamless migration from legacy seatflow prefix if not found
+      if (serialized === null || serialized === undefined) {
+        const legacy = backendStorage.getItem(LEGACY_PREFIX + key);
+        if (legacy !== null && legacy !== undefined) {
+          backendStorage.setItem(STORAGE_PREFIX + key, legacy);
+          serialized = legacy;
+        }
+      }
+
       if (serialized === null || serialized === undefined) {
         return defaultValue;
       }
@@ -65,6 +76,7 @@ export const storageService = {
   remove(key) {
     try {
       backendStorage.removeItem(STORAGE_PREFIX + key);
+      backendStorage.removeItem(LEGACY_PREFIX + key);
       return true;
     } catch (err) {
       console.error(`[storageService] Error removing key "${key}":`, err);
@@ -74,10 +86,9 @@ export const storageService = {
 
   clear() {
     try {
-      // Clear only seatflow items
       if (backendStorage === window.localStorage) {
         Object.keys(window.localStorage).forEach((k) => {
-          if (k.startsWith(STORAGE_PREFIX)) {
+          if (k.startsWith(STORAGE_PREFIX) || k.startsWith(LEGACY_PREFIX)) {
             window.localStorage.removeItem(k);
           }
         });
@@ -91,4 +102,3 @@ export const storageService = {
     }
   },
 };
-

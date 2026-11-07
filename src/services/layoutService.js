@@ -1,5 +1,6 @@
 import { DEFAULT_LAYOUT } from '../data/defaultLayout';
 import { storageService } from './storageService';
+import { authService } from './authService';
 import { supabase } from './supabase';
 
 const STORAGE_KEY = 'layout';
@@ -86,9 +87,17 @@ export const layoutService = {
   async saveLayout(layout) {
     storageService.set(STORAGE_KEY, layout);
 
-    // Sync to Supabase if authenticated admin
+    const token = authService.getSessionToken();
     try {
-      if (layout.id) {
+      if (token && layout.id) {
+        await supabase.rpc('admin_save_layout', {
+          p_session_token: token,
+          p_layout_id: layout.id,
+          p_name: layout.name,
+          p_desk_position: layout.teacherDesk?.position || 'center',
+          p_desk_label: layout.teacherDesk?.label || 'Meja Guru',
+        });
+      } else if (layout.id) {
         await supabase
           .from('classroom_layouts')
           .update({

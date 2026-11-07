@@ -43,7 +43,7 @@ export default function AdminOverview({
             Dashboard Manajemen Kelas
           </Badge>
           <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">
-            Selamat Datang di Panel SeatFlow
+            Selamat Datang di Panel RuangKelas
           </h2>
           <p className="text-sm text-brand-100 mt-2 leading-relaxed">
             Kelola denah kelas 26 siswa, lakukan acak ulang manual kapan saja, atau pantau rotasi otomatis mingguan setiap Minggu pukul 06:00 WIB.

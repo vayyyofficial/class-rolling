@@ -10,6 +10,7 @@ import {
   ExternalLink,
   ChevronRight,
   Shield,
+  KeyRound,
 } from 'lucide-react';
 
 export default function AdminSidebar({
@@ -26,6 +27,7 @@ export default function AdminSidebar({
     { id: 'seating', label: 'Denah & Acak Ulang', icon: Dices },
     { id: 'history', label: 'Riwayat Aktivitas', icon: History },
     { id: 'schedule', label: 'Pengaturan Jadwal', icon: Clock },
+    { id: 'security', label: 'Keamanan Sandi', icon: KeyRound },
   ];
 
   return (
@@ -38,11 +40,11 @@ export default function AdminSidebar({
               <Shield className="w-5 h-5" />
             </div>
             <div>
-              <span className="font-bold text-lg text-content-primary">SeatFlow</span>
+              <span className="font-bold text-lg text-content-primary">RuangKelas</span>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span className="text-[11px] font-semibold text-brand-600 uppercase tracking-wider">
-                  Panel Admin
+                  Panel Pengurus
                 </span>
               </div>
             </div>
@@ -94,14 +96,9 @@ export default function AdminSidebar({
               <p className="text-xs font-semibold text-content-primary truncate">
                 {currentUser?.name || 'Administrator'}
               </p>
-              {currentUser?.role === 'OWNER' && (
-                <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 border border-amber-300">
-                  OWNER
-                </span>
-              )}
             </div>
             <p className="text-[10px] text-content-secondary truncate">
-              {currentUser?.email || 'admin@seatflow.internal'}
+              Otentikasi Sandi Server
             </p>
           </div>
           <button
@@ -116,4 +113,3 @@ export default function AdminSidebar({
     </aside>
   );
 }
-

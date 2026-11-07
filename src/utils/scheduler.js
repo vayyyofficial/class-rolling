@@ -1,5 +1,5 @@
 /**
- * SEATFLOW - Scheduler Utility
+ * RUANGKELAS - Scheduler Utility
  * Handles Sunday 06:00 WIB weekly reroll calculation, countdown, and week identifiers.
  */
 

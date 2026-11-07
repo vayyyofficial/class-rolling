@@ -52,7 +52,7 @@ export default function HomePage({
               </h1>
 
               <p className="text-sm sm:text-base text-content-secondary leading-relaxed">
-                SeatFlow mengelola susunan 26 siswa kelas dalam 3 blok ruangan dengan rotasi otomatis setiap pekan. Seluruh siswa dapat mengecek meja duduknya tanpa perlu login.
+                RuangKelas mengelola susunan 26 siswa kelas dalam 3 blok ruangan dengan rotasi otomatis setiap pekan serta pembagian kelompok acak. Seluruh siswa dapat mengecek meja duduknya tanpa perlu login.
               </p>
 
               {/* Quick stats pills */}
@@ -178,7 +178,7 @@ export default function HomePage({
                 Ketentuan & Cara Kerja Rotasi Mingguan
               </h3>
               <p className="text-xs text-content-secondary mt-1">
-                Prinsip transparansi pengacakan tempat duduk SeatFlow untuk kenyamanan bersama.
+                Prinsip transparansi pengacakan tempat duduk RuangKelas untuk kenyamanan bersama.
               </p>
             </div>
 

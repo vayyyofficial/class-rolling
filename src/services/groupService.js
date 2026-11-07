@@ -156,7 +156,7 @@ export const groupService = {
     if (!generation || !generation.groups) return '';
 
     const lines = [
-      `*HASIL PEMBAGIAN KELOMPOK — SEATFLOW*`,
+      `*HASIL PEMBAGIAN KELOMPOK — RUANGKELAS*`,
       `📅 Tanggal: ${new Date(generation.createdAt).toLocaleDateString('id-ID', { dateStyle: 'full' })}`,
       `👥 Total: ${generation.studentCount} Siswa | ${generation.numGroups} Kelompok`,
       `────────────────────────────`,
@@ -169,7 +169,7 @@ export const groupService = {
       });
     });
 
-    lines.push(`\n_Dibuat otomatis oleh SeatFlow Classroom Management_`);
+    lines.push(`\n_Dibuat otomatis oleh RuangKelas_`);
     return lines.join('\n');
   },
 

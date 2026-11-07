@@ -18,8 +18,8 @@ dist-ssr
 *.key
 *.cert
 
-# Vercel
-.vercel
+# Netlify
+.netlify
 
 # Logs
 logs
@@ -42,4 +42,4 @@ Thumbs.db
 *.sln
 *.sw?
 
-.vercel
+

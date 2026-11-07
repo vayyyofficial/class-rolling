@@ -1,8 +1,7 @@
 -- ====================================================================
--- SEATFLOW COMPLETE DATABASE SETUP (RUN IN SUPABASE SQL EDITOR)
--- Project: SeatFlow (Production)
+-- RUANGKELAS COMPLETE DATABASE SETUP (RUN IN SUPABASE SQL EDITOR)
+-- Project: RuangKelas (Production)
 -- Reference: mhsxrfuyizcmdcfhmruu
--- Initial OWNER: fairuzziachmad@gmail.com
 -- ====================================================================
 
 -- 1. EXTENSIONS
@@ -539,15 +538,16 @@ SELECT public.execute_seating_reroll('initial', 'Inisialisasi Denah Awal Kelas (
 DO $$
 BEGIN
     PERFORM cron.unschedule('seatflow-weekly-reroll');
+    PERFORM cron.unschedule('ruangkelas-weekly-reroll');
 EXCEPTION WHEN OTHERS THEN
 END $$;
 
 DO $$
 BEGIN
     PERFORM cron.schedule(
-        'seatflow-weekly-reroll',
+        'ruangkelas-weekly-reroll',
         '0 23 * * 6',
-        $cron$SELECT public.execute_seating_reroll('automatic', 'Rotasi Otomatis Mingguan (Minggu 06:00 WIB)', NULL);$cron$
+        $cron$SELECT public.execute_seating_reroll('automatic', 'Rotasi Otomatis Mingguan RuangKelas (Minggu 06:00 WIB)', NULL);$cron$
     );
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'pg_cron extension not available or scheduled without superuser. Automatic scheduler can be triggered via Edge Function or Cron webhook.';
@@ -564,4 +564,263 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     -- Ignore if already added to publication
 END $$;
+
+-- ====================================================================
+-- 14. PASSWORD-ONLY ADMIN AUTHENTICATION & SECURITY HARDENING
+-- ====================================================================
+
+CREATE TABLE IF NOT EXISTS public.admin_security (
+    id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    password_hash TEXT NOT NULL,
+    failed_attempts INT NOT NULL DEFAULT 0,
+    locked_until TIMESTAMPTZ,
+    last_login_at TIMESTAMPTZ,
+    last_password_change TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.admin_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_active_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.admin_audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    action TEXT NOT NULL,
+    details JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.admin_security ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION public.is_valid_admin_session(p_token TEXT)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+BEGIN
+    IF p_token IS NULL OR length(p_token) < 32 THEN
+        RETURN false;
+    END IF;
+
+    RETURN EXISTS (
+        SELECT 1 FROM public.admin_sessions
+        WHERE session_token_hash = encode(digest(p_token, 'sha256'), 'hex')
+          AND expires_at > now()
+    );
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_verify_password(p_password TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_sec RECORD;
+    v_raw_token TEXT;
+    v_token_hash TEXT;
+    v_expires TIMESTAMPTZ;
+    v_remaining_seconds INT;
+BEGIN
+    IF p_password IS NULL OR length(p_password) = 0 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi tidak boleh kosong.');
+    END IF;
+
+    SELECT * INTO v_sec FROM public.admin_security WHERE id = 1;
+
+    IF v_sec.id IS NULL THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Sistem otentikasi belum diinisialisasi. Hubungi pemilik sistem.');
+    END IF;
+
+    IF v_sec.locked_until IS NOT NULL AND v_sec.locked_until > now() THEN
+        v_remaining_seconds := EXTRACT(EPOCH FROM (v_sec.locked_until - now()))::INT;
+        RETURN jsonb_build_object(
+            'success', false,
+            'locked', true,
+            'remaining_seconds', v_remaining_seconds,
+            'error', 'Terlalu banyak percobaan gagal. Akses terkunci selama ' || CEIL(v_remaining_seconds / 60.0)::INT || ' menit lagi.'
+        );
+    END IF;
+
+    IF v_sec.password_hash = crypt(p_password, v_sec.password_hash) THEN
+        UPDATE public.admin_security
+        SET failed_attempts = 0, locked_until = NULL, last_login_at = now(), updated_at = now()
+        WHERE id = 1;
+
+        v_raw_token := encode(gen_random_bytes(32), 'hex');
+        v_token_hash := encode(digest(v_raw_token, 'sha256'), 'hex');
+        v_expires := now() + interval '24 hours';
+
+        DELETE FROM public.admin_sessions WHERE expires_at < now();
+        INSERT INTO public.admin_sessions (session_token_hash, expires_at) VALUES (v_token_hash, v_expires);
+
+        INSERT INTO public.admin_audit_logs (action, details)
+        VALUES ('ADMIN_LOGIN_SUCCESS', jsonb_build_object('expires_at', v_expires));
+
+        RETURN jsonb_build_object('success', true, 'token', v_raw_token, 'expires_at', v_expires, 'role', 'ADMIN');
+    ELSE
+        UPDATE public.admin_security
+        SET failed_attempts = failed_attempts + 1,
+            locked_until = CASE WHEN failed_attempts + 1 >= 5 THEN now() + interval '15 minutes' ELSE NULL END,
+            updated_at = now()
+        WHERE id = 1
+        RETURNING failed_attempts INTO v_sec.failed_attempts;
+
+        IF v_sec.failed_attempts >= 5 THEN
+            INSERT INTO public.admin_audit_logs (action, details)
+            VALUES ('ADMIN_LOGIN_LOCKED', jsonb_build_object('failed_attempts', v_sec.failed_attempts));
+            RETURN jsonb_build_object('success', false, 'locked', true, 'remaining_seconds', 900, 'error', 'Akses dikunci sementara selama 15 menit karena 5 kali percobaan gagal.');
+        ELSE
+            INSERT INTO public.admin_audit_logs (action, details)
+            VALUES ('ADMIN_LOGIN_FAILED', jsonb_build_object('failed_attempts', v_sec.failed_attempts));
+            RETURN jsonb_build_object('success', false, 'locked', false, 'remaining_attempts', (5 - v_sec.failed_attempts), 'error', 'Kata sandi salah. Sisa kesempatan: ' || (5 - v_sec.failed_attempts));
+        END IF;
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_verify_session(p_token TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_token_hash TEXT;
+    v_session RECORD;
+BEGIN
+    IF p_token IS NULL OR length(p_token) < 32 THEN
+        RETURN jsonb_build_object('valid', false);
+    END IF;
+
+    v_token_hash := encode(digest(p_token, 'sha256'), 'hex');
+    SELECT * INTO v_session FROM public.admin_sessions WHERE session_token_hash = v_token_hash AND expires_at > now();
+
+    IF v_session.id IS NOT NULL THEN
+        UPDATE public.admin_sessions SET last_active_at = now() WHERE id = v_session.id;
+        RETURN jsonb_build_object('valid', true, 'expires_at', v_session.expires_at, 'role', 'ADMIN');
+    ELSE
+        RETURN jsonb_build_object('valid', false);
+    END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_change_password(
+    p_token TEXT,
+    p_current_password TEXT,
+    p_new_password TEXT
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_sec RECORD;
+    v_new_hash TEXT;
+    v_new_raw_token TEXT;
+    v_new_token_hash TEXT;
+    v_expires TIMESTAMPTZ;
+BEGIN
+    IF NOT public.is_valid_admin_session(p_token) THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Sesi tidak valid atau telah kedaluwarsa. Silakan login kembali.');
+    END IF;
+
+    IF p_new_password IS NULL OR length(trim(p_new_password)) < 8 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru minimal harus 8 karakter.');
+    END IF;
+
+    IF p_current_password = p_new_password THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru tidak boleh sama dengan kata sandi saat ini.');
+    END IF;
+
+    SELECT * INTO v_sec FROM public.admin_security WHERE id = 1;
+
+    IF v_sec.password_hash != crypt(p_current_password, v_sec.password_hash) THEN
+        INSERT INTO public.admin_audit_logs (action, details) VALUES ('PASSWORD_CHANGE_FAILED', jsonb_build_object('reason', 'current_password_mismatch'));
+        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi saat ini tidak cocok.');
+    END IF;
+
+    v_new_hash := crypt(trim(p_new_password), gen_salt('bf', 12));
+    UPDATE public.admin_security
+    SET password_hash = v_new_hash, last_password_change = now(), failed_attempts = 0, locked_until = NULL, updated_at = now()
+    WHERE id = 1;
+
+    DELETE FROM public.admin_sessions;
+
+    v_new_raw_token := encode(gen_random_bytes(32), 'hex');
+    v_new_token_hash := encode(digest(v_new_raw_token, 'sha256'), 'hex');
+    v_expires := now() + interval '24 hours';
+
+    INSERT INTO public.admin_sessions (session_token_hash, expires_at) VALUES (v_new_token_hash, v_expires);
+    INSERT INTO public.admin_audit_logs (action, details) VALUES ('ADMIN_PASSWORD_CHANGED', jsonb_build_object('timestamp', now()));
+
+    RETURN jsonb_build_object('success', true, 'token', v_new_raw_token, 'expires_at', v_expires, 'message', 'Kata sandi administrator berhasil diubah secara aman.');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.admin_logout(p_token TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    IF p_token IS NOT NULL THEN
+        DELETE FROM public.admin_sessions WHERE session_token_hash = encode(digest(p_token, 'sha256'), 'hex');
+    END IF;
+    RETURN jsonb_build_object('success', true);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.server_provision_admin_password(p_new_password TEXT)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    v_hash TEXT;
+BEGIN
+    IF p_new_password IS NULL OR length(trim(p_new_password)) < 8 THEN
+        RETURN jsonb_build_object('success', false, 'error', 'Kata sandi baru minimal 8 karakter.');
+    END IF;
+
+    v_hash := crypt(trim(p_new_password), gen_salt('bf', 12));
+
+    INSERT INTO public.admin_security (id, password_hash, failed_attempts, locked_until, last_password_change, updated_at)
+    VALUES (1, v_hash, 0, NULL, now(), now())
+    ON CONFLICT (id) DO UPDATE SET
+        password_hash = v_hash,
+        failed_attempts = 0,
+        locked_until = NULL,
+        last_password_change = now(),
+        updated_at = now();
+
+    DELETE FROM public.admin_sessions;
+    INSERT INTO public.admin_audit_logs (action, details) VALUES ('SERVER_PROVISION_PASSWORD', jsonb_build_object('timestamp', now()));
+    RETURN jsonb_build_object('success', true, 'message', 'Kata sandi admin berhasil disetel melalui prosedur server-side provisioning.');
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION public.admin_verify_password(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_verify_session(TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_change_password(TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.admin_logout(TEXT) TO anon, authenticated;
+
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM anon;
+REVOKE ALL ON FUNCTION public.server_provision_admin_password(TEXT) FROM authenticated;
+GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION public.server_provision_admin_password(TEXT) TO postgres;
 

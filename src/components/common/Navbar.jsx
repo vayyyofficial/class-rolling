@@ -37,7 +37,7 @@ export default function Navbar({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-tight text-content-primary">SeatFlow</span>
+                <span className="font-bold text-lg tracking-tight text-content-primary">RuangKelas</span>
                 <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 border border-brand-200">
                   26 Siswa
                 </span>
