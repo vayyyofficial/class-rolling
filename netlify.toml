@@ -4,6 +4,10 @@
   publish = "dist"
   command = "npm run build"
 
+[build.environment]
+  VITE_SUPABASE_URL = "https://mhsxrfuyizcmdcfhmruu.supabase.co"
+  VITE_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_VsdBt4QmNKtPteLAhjXTlQ_YT7hov_z"
+
 # SPA routing: forward all client-side paths to index.html
 [[redirects]]
   from = "/*"
@@ -18,4 +22,3 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
-
